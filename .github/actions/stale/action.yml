@@ -1,0 +1,48 @@
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+name: Stale issues
+description: Marks dormant issues as stale
+
+inputs:
+  github-token:
+    description: "PAT for GitHub API authentication"
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Run stale action
+    uses: actions/stale@v9  # https://github.com/actions/stale
+    with:
+      repo-token: ${{ inputs.github-token }}
+      days-before-stale: 90
+      days-before-close: 14
+      stale-issue-message: >
+        This issue has been automatically marked as stale because it has not had
+        recent activity. It will be closed in 14 days if no further activity occurs.
+        If the issue is still valid, please add a respective comment to prevent this 
+        issue from being closed automatically. Thank you for your contributions.
+      stale-issue-label: stale
+      stale-pr-label: stale
+      close-issue-label: wontfix
+      exempt-issue-labels: |
+        enhancement
+        pinned
+        security
+
+  - name: Run stale action (for enhancements)
+    uses: actions/stale@v9  # https://github.com/actions/stale
+    with:
+      days-before-stale: 360
+      days-before-close: 14
+      stale-issue-message: >
+        This issue has been automatically marked as stale because it has not had
+        recent activity. It will be closed in 14 days if no further activity occurs.
+        If the issue is still valid, please add a respective comment to prevent this 
+        issue from being closed automatically. Thank you for your contributions.
+      stale-issue-label: stale
+      stale-pr-label: stale
+      close-issue-label: wontfix
+      only-labels: enhancement
+      exempt-issue-labels: |
+        pinned
+        security
