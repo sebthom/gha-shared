@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<toolchains xmlns="http://maven.apache.org/TOOLCHAINS/1.1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/TOOLCHAINS/1.1.0 https://maven.apache.org/xsd/toolchains-1.1.0.xsd">
+  <toolchain>
+     <!-- used for compilation -->
+     <type>jdk</type>
+     <provides>
+        <version>${env.COMPILE_JDK_VERSION}</version>
+        <vendor>${env.COMPILE_JDK_VENDOR}</vendor>
+     </provides>
+     <configuration>
+        <jdkHome>${env.COMPILE_JDK_HOME}</jdkHome>
+     </configuration>
+  </toolchain>
+  <toolchain>
+     <!-- used for compilation -->
+     <type>jdk</type>
+     <provides>
+        <version>${env.COMPILE_JDK_VERSION}</version>
+        <vendor>default</vendor>
+     </provides>
+     <configuration>
+        <jdkHome>${env.COMPILE_JDK_HOME}</jdkHome>
+     </configuration>
+  </toolchain>
+  <toolchain>
+     <!-- used for tests -->
+     <type>jdk</type>
+     <provides>
+        <version>${env.TEST_JDK_VERSION}</version>
+        <vendor>${env.TEST_JDK_VENDOR}</vendor>
+     </provides>
+     <configuration>
+        <jdkHome>${env.TEST_JDK_HOME}</jdkHome>
+     </configuration>
+  </toolchain>
+  <toolchain>
+     <!-- used for tests -->
+     <type>jdk</type>
+     <provides>
+        <version>${env.TEST_JDK_VERSION}</version>
+        <vendor>default</vendor>
+     </provides>
+     <configuration>
+        <jdkHome>${env.TEST_JDK_HOME}</jdkHome>
+     </configuration>
+  </toolchain>
+</toolchains>

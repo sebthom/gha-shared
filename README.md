@@ -4,13 +4,188 @@
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 1. [What is it?](#what-is-it)
+1. [Reusable Workflows](#reusable-workflows)
+   1. [Maven Build](#reusable-workflow-maven-build)
+1. [Shared Actions](#shared-actions)
+   1. [Stale](#shared-action-stale)
 1. [License](#license)
 
 
 ## <a name="what-is-it"></a>What is it?
 
-A collection of reusable GitHub action workflows and composite actions.
+A collection of reusable GitHub Actions **workflows** and **composite actions**.
 
+These components help standardize CI/CD pipelines across multiple repositories by centralizing common build, test, and deployment logic.
+
+
+## <a name="reusable-workflows"></a>Reusable Workflows
+
+| Workflow Name | Path                                         | Description
+| ------------- | -------------------------------------------- | -----------
+| Maven Build   | `.github/workflows/reusable.maven-build.yml` | Builds, tests, and optionally releases Maven projects with multi-JDK matrix.
+
+### <a name="reusable-workflow-maven-build"></a>Reusable Workflow: Maven Build
+
+To use the **Maven Build** workflow, reference its YAML file in your repository's workflow definition.
+
+#### Example
+
+```yaml
+name: Maven CI
+on:
+  push:
+    branches-ignore:  # build all branches except:
+    - 'dependabot/**'  # prevent GHA triggered twice (once for commit to the branch and once for opening/syncing the PR)
+    tags-ignore:  # don't build tags
+    - '**'
+  pull_request:
+  workflow_dispatch:
+    # https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_dispatch
+    inputs:
+      debug-with-ssh:
+        description: "Start an SSH session for debugging purposes at the end of the build:"
+        default: never
+        type: choice
+        options: [ always, on_failure, on_failure_or_cancelled, never ]
+      debug-with-ssh-only-for-actor:
+        description: "Limit access to the SSH session to the GitHub user that triggered the job."
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    uses: sebthom/gha-shared/.github/workflows/reusable.maven-build.yml@v1
+    with:
+      runs-on: ubuntu-latest,macos-latest!,windows-latest
+      compile-jdk: 17
+      test-jdks: 11,17,21,24!
+
+      maven-jdk: 21
+      maven-versions: |
+        3.8.4
+        4.0.0-rc-2!
+        mvnw
+
+      javadoc-branch: gh-pages
+      snapshots-branch: mvn-snapshots
+
+      before-build: |
+        if [[ $OSTYPE == linux* ]] && ! hash ping &>/dev/null; then
+          (set -x; sudo apt-get install iputils-ping)
+        fi
+
+      debug-with-ssh: ${{ inputs.debug-with-ssh }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+
+    secrets:
+      SONATYPE_CENTRAL_USER:  ${{ secrets.SONATYPE_CENTRAL_USER }}
+      SONATYPE_CENTRAL_TOKEN: ${{ secrets.SONATYPE_CENTRAL_TOKEN }}
+      GPG_SIGN_KEY:           ${{ secrets.GPG_SIGN_KEY }}
+      GPG_SIGN_KEY_PWD:       ${{ secrets.GPG_SIGN_KEY_PWD }}
+      CODECOV_TOKEN:          ${{ secrets.CODECOV_TOKEN }}
+
+    permissions:
+      actions: write        # to delete action cache entries
+      contents: write       # to create releases (commit to dev branch, create tags)
+      pull-requests: write  # for dependabot PR auto merges
+```
+
+#### Inputs
+
+| Name                                | Type | Default                  | Description
+| ----------------------------------- | ---- | ------------------------ | -----------
+|**Runner:**
+| `runs-on`                           | str  | `ubuntu-latest`          | A comma- or newline-separated list of GitHub Actions runner labels (e.g. `ubuntu-latest,windows-latest`). Append `!` to any label to allow its job to fail without failing the overall workflow (e.g. `windows-latest!`).    |
+| `timeout-minutes`                   | int  | `30`                     | Maximum runtime (in minutes) for each job before GitHub cancels it.
+|**Java:**
+| `compile-jdk`                       | str  | -                        | **REQUIRED** The JDK for compilation, either a major version (e.g. `11`, `17`) or vendor-qualified (`temurin@11`).
+| `test-jdks`                         | str  | -                        | A comma- or newline-separated list of additional JDKs to run unit tests against (e.g. `11,17` or `temurin@11`). Append `!` to allow failures for that JDK (e.g. `17!`).
+| **Maven:**
+| `maven-jdk`                         | str  | `temurin@21`             | The JDK used to run Maven itself, by major version or with vendor (e.g. `17` or `temurin@17`).
+| `maven-versions`                    | str  | -                        | A comma- or newline-separated list of Maven runtimes (e.g. `latest,3.6.1,mvnw`). Use `mvnw` to invoke `./mvnw`; otherwise specify a version or `latest`. Append `!` to allow failures (e.g. `3.6.3!`).
+| `extra-maven-args`                  | str  | -                        | Additional command-line flags to append to every Maven invocation (e.g. `-DskipTests`).
+| `maven-settings-file`               | str  | -                        | Path to a custom Maven `settings.xml`. If unset, the workflow uses [resource/maven/settings.xml](resource/maven/settings.xml)).
+| **Deployment:**
+| `development-branch`                | str  | `main`                   | Long-lived development branch that serves as the source for cutting Maven releases and publishing SNAPSHOT version (e.g., 'main' or 'develop').
+| `release-trigger-file`              | str  | `.ci/release-trigger.sh` | Path to a shell script that defines variables evaluated by the workflow to decide whether to perform an automatic Maven release. Defines `POM_CURRENT_VERSION`, `POM_RELEASE_VERSION`, `DRY_RUN`, and `SKIP_TESTS`. When on `development-branch` and versions match, a release is cut automatically.
+| `javadoc-branch`                    | str  | -                        | Branch where generated Javadoc HTML is published (e.g. `gh-pages`). Omit or leave blank to skip Javadoc deployment.
+| `snapshots-branch`                  | str  | -                        | Branch to which SNAPSHOT artifacts are deployed (e.g. `mvn-snapshots`). Omit or leave blank to skip snapshot publishing.
+| **Hooks:**
+| `before-build`                      | str  | -                        | Bash commands to run **before** the Maven build starts.
+| `after-build`                       | str  | -                        | Bash commands to run **after** the Maven build completes.
+|**Debugging:**
+| `debug-with-ssh`                    | str  | `never`                  | When to open an SSH session for post-build debugging: `always`, `on_failure`, `on_failure_or_cancelled`, or `never`.
+| `debug-with-ssh-only-for-actor`     | bool | `true`                   | Restrict SSH debug session access to the GitHub user who triggered the workflow.
+| `debug-with-ssh-only-jobs-matching` | str  | `.*`                     | Only start SSH session for jobs matching this regex pattern.
+
+#### Secrets
+
+| Name                     | Description
+| ------------------------ | -----------
+| `SONATYPE_CENTRAL_USER`  | Sonatype Central username (required for publishing releases to Maven Central).
+| `SONATYPE_CENTRAL_TOKEN` | Sonatype Central API token (required for publishing releases to Maven Central).
+| `GPG_SIGN_KEY`           | Base64-encoded GPG private key for signing release artifacts.
+| `GPG_SIGN_KEY_PWD`       | Passphrase for the GPG signing keys.
+| `CODECOV_TOKEN`          | Codecov upload token for publishing test coverage reports.
+
+*For full details, see the [.github/workflows/reusable.maven-build.yml](.github/workflows/reusable.maven-build.yml)*
+
+## <a name="shared-actions"></a>Shared Actions
+
+| Action Name      | Path                                | Description
+| -----------------| ------------------------------------| -----------
+| `stale`          | `.github/actions/stale/action.yaml` | Marks dormant issues as stale
+
+
+### <a name="shared-action-stale"></a>Shared Action: Stale
+
+A composite action that leverages the official [`actions/stale`](https://github.com/actions/stale) action to automatically mark
+and close stale issues and pull requests.
+
+Behavior:
+1. **Standard stale pass**
+   - Targets all issues and PRs (except those labeled `enhancement`) inactive for 90 days, adding the `stale` label.
+   - After an additional 14 days of inactivity, closes them with the `wontfix` label.
+1. **Enhancement-specific pass**
+   - Specifically targets issues labeled `enhancement` inactive for 360 days, adding the `stale` label.
+   - After an additional 14 days of inactivity, closes them with the `wontfix` label.
+1. **Pinned exemption**
+   - Any issue or PR labeled `pinned` or `security` is completely exempt from both stale passes and
+     will never be marked `stale` or `closed`.
+
+#### Example
+
+```yaml
+name: Stale issues
+
+on:
+  schedule:
+    - cron: '0 15 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run stale defaults
+        uses: sebthom/gha-shared/.github/actions/stale@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+
+#### Inputs
+
+| Input Name     | Type   | Default               | Description
+| -------------- | ------ | --------------------- | -----------
+| `github-token` | string | `${{ github.token }}` | Personal Access Token for GitHub API authentication.
+
+
+*For full details, see the [.github/actions/stale/action.yml](.github/actions/stale/action.yml)*
 
 ## <a name="license"></a>License
 
@@ -21,7 +196,7 @@ Individual files contain the following tag instead of the full license text:
 SPDX-License-Identifier: MIT License
 ```
 
-This enables machine processing of license information based on the SPDX License Identifiers that are available here: https://spdx.org/licenses/.
+This enables machine processing of license information based on the SPDX License Identifiers available at https://spdx.org/licenses/.
 
 An exception is made for:
 1. files in readable text which contain their own license information, or
