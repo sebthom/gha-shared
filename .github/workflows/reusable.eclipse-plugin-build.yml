@@ -1,0 +1,910 @@
+# SPDX-FileCopyrightText: © Sebastian Thomschke
+# SPDX-FileContributor: Sebastian Thomschke (https://sebthom.de/)
+# SPDX-License-Identifier: MIT
+# SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+name: Eclipse Plugin Build
+
+on:
+  workflow_call:
+
+    inputs:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callinputs
+      runs-on:
+        description: >
+          A comma- or newline-separated list of GitHub Actions runner labels (for example: `ubuntu-latest,windows-latest`).  
+          See https://github.com/actions/runner-images#available-images
+          Append an exclamation mark '!' to a label to allow that runner's job to fail without failing the entire run (e.g., `windows-latest!`).
+        default: ubuntu-latest
+        type: string
+      timeout-minutes:
+        description: "Maximum number of minutes the workflow is allowed to run before timing out"
+        default: 30
+        type: number
+
+      target-files:
+        description: >
+          A comma- or newline-separated list of Eclipse PDE *.target files to build with. 
+          The build artifacts of the first target platform are used when publishing preview and stable releases.
+          See https://github.com/eclipse-pde/eclipse.pde/blob/master/docs/Target_Definitions.md
+          Each file is passed to the respective Maven build as `-Dtycho.target-platform.file=<target-file>` and `-Dtycho.target-platform=<target-filename-without-extension>`
+          Append an exclamation mark '!' suffix to allow failures for that target (e.g., `targets/unstable.target!`).
+        required: true
+        type: string
+
+      development-branch:
+        description: "Long-lived development branch that serves as the source for publishing preview releases (e.g., 'main' or 'develop')"
+        default: main
+        type: string
+      development-updatesite-branch:
+        description: "Long-lived branch that holds the update site of the latest publishing preview releases (e.g., 'updatesite-preview')"
+        default: updatesite-preview
+        type: string
+
+      release-branch:
+        description: "Long-lived release branch that serves as the source for publishing stable releases (e.g., 'release')"
+        default: release
+        type: string
+      release-updatesite-branch:
+        description: "Long-lived branch that holds the update site of the latest publishing stable releases (e.g., 'updatesite')"
+        default: updatesite
+        type: string
+
+      release-archive-name:
+        description: >
+          File name under which the generated update-site / p2 repository ZIP will be attached to the GitHub release
+          (e.g. `com.example.plugin.updatesite.zip`).
+        required: true
+        type: string
+      release-archive-glob:
+        description: >
+          Glob pattern used to locate the update-site / p2 repository ZIP produced by the Maven Tycho build.
+          Default matches typical artifacts, e.g. `./com.example.plugin.repository/target/com.example.plugin.repository-1.0.0.zip`
+          or `./updatesite/target/com.example.plugin.updatesite-1.0.0.zip`
+        default: "**/target/*{updatesite,repository}-*.zip"
+        type: string
+
+      maven-jdk:
+        description: "The JDK to run Apache Maven, either major version like 11, 17 or with vendor like 'temurin@11'"
+        default: temurin@21
+        type: string
+      maven-versions:
+        description: >
+          A comma- or newline-separated list of Maven runtimes to use, for example `latest,3.6.1,mvnw`.
+          Use `mvnw` to invoke the project's own `./mvnw` wrapper script; otherwise specify a version number or `latest`.
+          Append an exclamation mark '!' suffix to allow failures for that Maven version (e.g., `latest!`).
+        required: false
+        type: string
+      extra-maven-args:
+        description: "Additional command-line arguments to append to all Maven invocations"
+        required: false
+        type: string
+      maven-settings-file:
+        description: "Path to a custom Maven settings.xml file to use during the build"
+        required: false
+        type: string
+
+      before-build: 
+        description: "Bash commands executed before the Maven build"
+        required: false
+        type: string
+      after-build:
+        description: "Bash commands executed after the Maven build" 
+        required: false
+        type: string
+
+      debug-with-ssh:
+        description: >-
+          When to open an SSH session for post-build debugging:
+          always | on_failure | on_failure_or_cancelled | never
+        default: "never"
+        type: string
+      debug-with-ssh-only-for-actor:
+        description: "Restrict SSH debug session access to the GitHub user who triggered the workflow"
+        default: true
+        type: boolean
+      debug-with-ssh-only-jobs-matching:
+        description: "Only start an SSH session for jobs matching this regex pattern:"
+        default: ".*"
+        type: string
+
+      # workaround for https://github.com/actions/toolkit/issues/1264
+      gha-shared-repo:    { default: "sebthom/gha-shared", type: string, description: "Repository containing this workflow" }
+      gha-shared-version: { default: "v1",                 type: string, description: "Version of this workflow: branch, tag or commit" }
+
+    secrets:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callsecrets
+      CODECOV_TOKEN:
+        description: "Codecov upload token for publishing test coverage reports"
+        required: false
+
+    outputs:
+      release-name:
+        description: Name of the GitHub release created (empty when no release)
+        value: ${{ jobs.build.outputs.RELEASE_NAME }}
+      release-updatesite-branch:
+        description: Branch that hosts the generated p2 update-site (empty when no release)
+        value: ${{ jobs.build.outputs.RELEASE_UPDATESITE_BRANCH }}
+
+
+defaults:
+  run:
+    shell: bash
+
+
+jobs:
+  ###########################################################
+  init:
+  ###########################################################
+    runs-on: ubuntu-latest  # https://github.com/actions/runner-images#available-images
+
+    steps:
+    - name: "Show: GitHub context"
+      env:
+        GITHUB_CONTEXT: ${{ toJSON(github) }}
+      run: printf '%s' "$GITHUB_CONTEXT" | python -m json.tool
+
+
+    - name: "Show: environment variables"
+      run: env | sort
+
+
+    - name: Git Checkout
+      uses: actions/checkout@v4  # https://github.com/actions/checkout
+
+
+    - name: Lint shell scripts
+      uses: luizm/action-sh-checker@master  # https://github.com/marketplace/actions/sh-checker
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SHFMT_OPTS: --simplify --keep-padding
+      with:
+         sh_checker_comment: true
+         sh_checker_checkbashisms_enable: true
+         sh_checker_shfmt_disable: true
+
+
+    - name: Parse inputs
+      id: PARSE_INPUTS
+      env:
+        RUNS_ON:        ${{ inputs.runs-on }}
+        MAVEN_JDK:      ${{ inputs.maven-jdk }}
+        MAVEN_VERSIONS: ${{ inputs.maven-versions }}
+        TARGET_FILES:   ${{ inputs.target-files }}
+        ON_DEV_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
+        ON_REL_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.release-branch)     && 'true' || 'false' }}
+        DEV_UPDATE_SITE_BRANCH: ${{ inputs.development-updatesite-branch }}
+        REL_UPDATE_SITE_BRANCH: ${{ inputs.release-updatesite-branch }}
+        DISABLE_RELEASES: ${{ (env.ACT && !env.GITEA_ACTIONS) && 'true' || 'false' }}  # no releases when running via nektos/act locally
+        CODECOV_TOKEN:  ${{ secrets.CODECOV_TOKEN }}
+      shell: python {0}
+      run: |
+        import collections, json, os, re, uuid, sys, xml.etree.ElementTree as ET
+        ENV = os.environ
+
+        def parse_runner(runner_spec: str):
+            # Parse Runner label spec with optional '!' indicating allowed failure
+            # return (label, allow_failure)
+            allow_failure = runner_spec.endswith('!')
+            label = runner_spec[:-1] if allow_failure else runner_spec
+            return label.strip(), allow_failure
+
+        def parse_jdk(jdk_spec: str):
+            # Parse JDK spec with optional '!' indicating allowed failure
+            # return (vendor, version, allow_failure) with default vendor 'temurin'
+            allow_failure = jdk_spec.endswith('!')
+            jdk_spec = jdk_spec[:-1] if allow_failure else jdk_spec
+            if '@' in jdk_spec:
+                vendor, version = jdk_spec.split('@', 1)
+            else:
+                vendor, version = 'temurin', jdk_spec
+            return vendor.strip(), version.strip(), allow_failure
+
+        def parse_maven(mvn_spec: str):
+            # Parse Maven version spec with optional '!' indicating allowed failure
+            # return (version, allow_failure)
+            allow_failure = mvn_spec.endswith('!')
+            version = mvn_spec[:-1] if allow_failure else mvn_spec
+            return version.strip(), allow_failure
+
+        def parse_target(target_spec: str):
+            # Parse *.target spec with optional '!' indicating allowed failure
+            # return (target_file, allow_failure)
+            allow_failure = target_spec.endswith('!')
+            target_file = target_spec[:-1] if allow_failure else target_spec
+            return target_file.strip(), allow_failure
+
+        def split_items(value: str):
+            # Split on comma *or* any newline sequence (\n, \r\n, \r), collapse multiple
+            # separators, and return trimmed, **unique** tokens in first-seen order.
+            tokens = [v.strip() for v in re.split(r'[,\r\n]+', value) if v.strip()]
+            return list(collections.OrderedDict.fromkeys(tokens))
+
+        def get_jdk_version_from_target(file_path: str) -> str:
+            # Parse an Eclipse .target file and return the JavaSE version from the <targetJRE> path, 
+            # validating it matches the expected container/VMType/JavaSE-<version> format.
+
+            target_jre = ET.parse(file_path).getroot().find('targetJRE')
+            if target_jre is None or 'path' not in target_jre.attrib:
+                raise ValueError(f"No <targetJRE> element with a 'path' attribute found in {file_path!r}.")
+
+            path = target_jre.attrib['path']
+            m = re.compile(r'^org\.eclipse\.jdt\.launching\.JRE_CONTAINER/org\.eclipse\.jdt\.internal\.debug\.ui\.launcher\.StandardVMType/JavaSE-(\d+)$').match(path)
+            if not m:
+                raise ValueError(
+                    f"Unexpected <targetJRE> path format in {file_path!r}: {path!r}\n"
+                    "Expected: org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/JavaSE-<version>"
+                )
+            return m.group(1)
+
+        runners = [parse_runner(r) for r in split_items(ENV["RUNS_ON"])]
+        if not runners:
+            runners = [("ubuntu-latest", False)]
+
+        maven_jdk    = parse_jdk(ENV["MAVEN_JDK"])
+        target_files = [parse_target(t) for t in split_items(ENV["TARGET_FILES"])]
+        mvn_versions = [parse_maven(m)  for m in split_items(ENV["MAVEN_VERSIONS"])]
+        if not mvn_versions:
+            mvn_versions = [("mvn" if os.path.isfile("./mvnw") else "latest", False)]
+
+        on_dev_branch = ENV["ON_DEV_BRANCH"] == "true"
+        on_rel_branch = ENV["ON_REL_BRANCH"] == "true"
+        codecov_token = ENV["CODECOV_TOKEN"]
+
+        matrix = []
+
+        for runner_label, runner_allow_failure in runners:
+            for mvn_idx, (mvn_version, mvn_allow_failure) in enumerate(mvn_versions):
+                for target_idx, (target_file, target_allow_failure) in enumerate(target_files):
+                    if not os.path.isfile(target_file):
+                       print(f"❌ Specified target file '{target_file}' does not exist.", file=sys.stderr)
+                       sys.exit(1)
+                    is_release_job = len(matrix) == 0  # first matrix job is used to create releases
+                    release_name = ""
+                    release_updatesite_branch = ""
+                    concurrency_group = uuid.uuid4().hex
+                    if is_release_job and ENV['DISABLE_RELEASES'] != 'true':
+                        if on_dev_branch:
+                            release_name = "preview"
+                            concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-preview"
+                            release_updatesite_branch = ENV['DEV_UPDATE_SITE_BRANCH']
+                        elif on_rel_branch:
+                            release_name = "stable"
+                            concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-stable"
+                            release_updatesite_branch = ENV['REL_UPDATE_SITE_BRANCH']
+
+                    jdk_version = get_jdk_version_from_target(target_file)
+                    entry = {
+                      "TEST_JDK_VERSION":       jdk_version,
+                      "TEST_JDK_VENDOR":        "temurin",
+                      "TARGET_FILE":            target_file,
+                      "MAVEN_VERSION":          mvn_version,
+                      "RUNS_ON":                runner_label,
+                      "COMPILE_JDK_VERSION":    jdk_version,
+                      "COMPILE_JDK_VENDOR":     "temurin",
+                      "MAVEN_JDK_VERSION":      maven_jdk[1],
+                      "MAVEN_JDK_VENDOR":       maven_jdk[0],
+                      "RELEASE_NAME":           release_name,
+                      "UPDATESITE_BRANCH":      release_updatesite_branch,
+                      "CAN_UPDATE_MAVEN_CACHE": mvn_idx == 0 and target_idx == 0, # only the first job per runner updates the Maven cache
+                      "CAN_UPDATE_TYCHO_CACHE": mvn_idx == 0, # only the first Maven-version per runner+target updates the Tycho cache
+                      "CONCURRENCY_GROUP":      concurrency_group,
+                      "ALLOW_FAILURE":          runner_allow_failure or mvn_allow_failure or target_allow_failure,
+                      "UPLOAD_TO_CODECOV":      is_release_job and codecov_token != ""
+                    }
+                    if entry not in matrix:
+                        matrix.append(entry)
+
+        json_out = json.dumps(matrix, separators=(",",":"))
+        print("::group::Generated Matrix Config")
+        print(json.dumps(matrix, indent=2, sort_keys=True))
+        print("::endgroup::")
+
+        # write to GitHub output
+        with open(ENV["GITHUB_OUTPUT"], "a") as out:
+            out.write(f"MATRIX={json_out}\n")
+
+
+    - name: Detect if CODECOV_TOKEN secret is present
+      id: HAS_CODECOV_TOKEN
+      run: |
+        if [ -n "${{ secrets.CODECOV_TOKEN }}" ]; then
+          echo "present=1"  >> "$GITHUB_OUTPUT"
+        else
+          echo "present=" >> "$GITHUB_OUTPUT"
+        fi
+
+
+    outputs:
+      MATRIX:            ${{ steps.PARSE_INPUTS.outputs.MATRIX }}
+      HAS_CODECOV_TOKEN: ${{ steps.HAS_CODECOV_TOKEN.outputs.present }}
+
+
+  ###########################################################
+  build:
+  ###########################################################
+    runs-on: ${{ matrix.RUNS_ON }}  # https://github.com/actions/runner-images#available-images
+    continue-on-error: ${{ matrix.ALLOW_FAILURE }}
+    needs: [ init ]
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.init.outputs.MATRIX) }}
+
+
+    # https://docs.github.com/en/actions/using-jobs/using-concurrency
+    concurrency:
+      group: ${{ matrix.CONCURRENCY_GROUP }}
+      cancel-in-progress: false
+
+
+    permissions:
+      actions: write  # to delete action cache entries
+      contents: write # to create releases (commit to dev branch, create tags)
+
+
+    steps:
+    - name: "Show: GitHub context"
+      env:
+        GITHUB_CONTEXT: ${{ toJSON(github) }}
+      run: printf '%s' "$GITHUB_CONTEXT" | python -m json.tool
+
+
+    - name: "Show: Matrix config"
+      env:
+        MATRIX: ${{ toJSON(matrix) }}
+      run: printf '%s' "$MATRIX" | python -m json.tool
+
+
+    - name: "Show: environment variables"
+      run: env | sort
+
+
+    - name: "Show: Init job outputs"
+      env:
+        JOB_OUTPUT: ${{ toJson(needs.init.outputs) }}
+      run: printf '%s' "$JOB_OUTPUT" | python -m json.tool
+
+
+    - name: Git Checkout
+      uses: actions/checkout@v4  # https://github.com/actions/checkout
+      with:
+        fetch-depth: 0  # required to prevent tycho-p2-extras-plugin:compare-version-with-baseline potentially failing the build
+
+
+    - name: Download workflow resources
+      env:
+        GITHUB_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+        WORKFLOW_REPO:    ${{ inputs.gha-shared-repo }}    # e.g. sebthom/gha-shared
+        WORKFLOW_VERSION: ${{ inputs.gha-shared-version }} # branch, tag or commit SHA
+        DEST: /tmp/gha-shared
+      run: |
+        set -euo pipefail
+
+        URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${WORKFLOW_REPO}.git"
+        REF="$WORKFLOW_VERSION"
+
+        # Trim refs/heads/ or refs/tags/ if present
+        [[ "$REF" == refs/* ]] && REF="${REF#refs/heads/}" && REF="${REF#refs/tags/}"
+
+        rm -rf "$DEST" # for nektos/act in case of re-runs
+
+        # If REF looks like a 40-char SHA, treat as commit; else as branch/tag
+        if [[ "$REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "Cloning repo [$WORKFLOW_REPO] and checking out commit [$REF]..."
+          (
+            set -x; 
+            git clone --depth 1 --no-checkout "$URL" "$DEST";
+            git -C "$DEST" fetch --depth 1 origin "$REF";
+            git -C "$DEST" checkout "$REF";
+          )
+        else
+          echo "Cloning repo [$WORKFLOW_REPO] and checking out branch/tag [$REF]..."
+          (set -x; git clone --depth 1 --branch "$REF" "$URL" "$DEST")
+        fi
+
+        echo "✅ Checked out $WORKFLOW_REPO@$WORKFLOW_VERSION into $DEST"
+        (set -x; ls -l "$DEST")
+
+
+    - name: Configure fast APT repository mirror
+      if: runner.os == 'Linux'
+      uses: vegardit/fast-apt-mirror.sh@v1
+
+
+    - name: "Install: Linux packages 📦"
+      if: runner.os == 'Linux'
+      run: |
+        set -eu
+
+        packages=xvfb
+
+        # prevents: "Failed to execute child process “dbus-launch” (No such file or directory)"
+        packages+=" dbus-x11"
+
+        # prevents: "dbind-WARNING **: 20:17:55.046: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files"
+        # see https://gist.github.com/jeffcogswell/62395900725acef1c0a5a608f7eb7a05
+        packages+=" at-spi2-core"
+
+        # prevents:
+        #  java.lang.UnsatisfiedLinkError: Could not load SWT library. Reasons:
+        #    no swt-pi4-gtk-4956r13 in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
+        #    no swt-pi4-gtk in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
+        #    no swt-pi4 in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
+        packages+=" libswt-gtk-*-java"
+
+        # prevents: 
+        #   java.io.IOException: Cannot run program "xdg-mime": error=2, No such file or directory
+        #     at java.base/java.lang.ProcessBuilder.start(ProcessBuilder.java:1143)
+        #     at java.base/java.lang.ProcessBuilder.start(ProcessBuilder.java:1073)
+        #     at org.eclipse.urischeme.internal.registration.ProcessExecutor.execute(ProcessExecutor.java:36)
+        #     at org.eclipse.urischeme.internal.registration.RegistrationLinux.getRegisteredDesktopFileForScheme(RegistrationLinux.java:144)
+        #     at org.eclipse.urischeme.internal.registration.RegistrationLinux.determineHandlerLocation(RegistrationLinux.java:86)
+        #     at org.eclipse.urischeme.internal.registration.RegistrationLinux.getSchemesInformation(RegistrationLinux.java:75)
+        #     at org.eclipse.urischeme.AutoRegisterSchemeHandlersJob.run(AutoRegisterSchemeHandlersJob.java:85)
+        packages+=" xdg-utils"
+        
+        set -x
+        sudo apt-get install --no-install-recommends -y $packages
+
+
+    - name: "Install: JDK ${{ matrix.COMPILE_JDK_VERSION }} ☕ (for compilation and tests)"
+      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
+      id: SETUP_COMPILE_JDK
+      with:
+        distribution: ${{ matrix.COMPILE_JDK_VENDOR }}
+        java-version: ${{ matrix.COMPILE_JDK_VERSION }}
+
+
+    - name: "Install: JDK ${{ matrix.TEST_JDK_VERSION }} ☕ (for tests)"
+      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
+      id: SETUP_TEST_JDK
+      with:
+        distribution: ${{ matrix.TEST_JDK_VENDOR }}
+        java-version: ${{ matrix.TEST_JDK_VERSION }}
+
+
+    # Maven JDK must be installed last so it is the one on PATH
+    - name: "Install: JDK ${{ matrix.MAVEN_JDK_VERSION }} ☕ (to run Maven)"
+      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
+      id: SETUP_MAVEN_JDK
+      with:
+        distribution: ${{ matrix.MAVEN_JDK_VENDOR }}
+        java-version: ${{ matrix.MAVEN_JDK_VERSION }}
+
+
+    - name: "Cache: Restore (Local Maven Repository)"
+      id: CACHE-RESTORE-MAVEN
+      uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
+      with:
+        # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found 
+        # Excluded sub directory not working https://github.com/actions/toolkit/issues/713
+        path: |
+          ~/.m2/bin
+          ~/.m2/repository/*
+          !~/.m2/repository/.cache
+          !~/.m2/repository/.meta
+          !~/.m2/repository/com/vegardit/no-npe
+          !~/.m2/repository/p2
+          !~/.m2/repository/*SNAPSHOT*
+        key: ${{ matrix.RUNS_ON }}-mvn-repo-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.RUNS_ON }}-mvn-repo-
+
+
+    - name: "Cache: Restore (Local Tycho Repository)"
+      id: CACHE-RESTORE-TYCHO
+      uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
+      with:
+        # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found
+        path: |
+          ~/.m2/repository/.cache/tycho
+          ~/.m2/repository/.meta/p2-artifacts.properties
+          ~/.m2/repository/p2
+        key: ${{ matrix.RUNS_ON }}-repo-tycho-${{ hashFiles(matrix.TARGET_FILE) }}
+        restore-keys: |
+          ${{ matrix.RUNS_ON }}-repo-tycho-
+
+
+    - name: "Move Restored Local Maven Repo"
+      if: ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-hit }}
+      id: MOVE_RESTORED_MAVEN_REPO
+      run: |
+        RESTORED_MAVEN_REPO_PATH=$HOME/.m2/repository-restored
+        (set -x; mv -v ~/.m2/repository "$RESTORED_MAVEN_REPO_PATH")
+        echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >> $GITHUB_OUTPUT
+
+
+    - name: "Before Build: Custom Bash script"
+      if: inputs.before-build
+      env:
+        GITHUB_JOB_ID: ${{ github.job }}
+        GITHUB_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+      run: ${{ inputs.before-build }}
+
+
+    - name: "Build with Maven 🔨"
+      env:
+        # core settings
+        TARGET_FILE: ${{ matrix.TARGET_FILE }}
+
+        MAVEN_VERSION:            ${{ matrix.MAVEN_VERSION }}
+        MAVEN_SETTINGS_FILE:      ${{ inputs.maven-settings-file || '/tmp/gha-shared/resources/maven/settings.xml' }}
+        MAVEN_TOOLCHAINS_FILE:    ${{ '/tmp/gha-shared/resources/maven/toolchains.xml' }}
+        RESTORED_MAVEN_REPO_PATH: ${{ steps.MOVE_RESTORED_MAVEN_REPO.outputs.REPO_PATH }}
+
+        COMPILE_JDK_VENDOR:  ${{ matrix.COMPILE_JDK_VENDOR }}
+        COMPILE_JDK_VERSION: ${{ matrix.COMPILE_JDK_VERSION }}
+        COMPILE_JDK_HOME:    ${{ steps.SETUP_COMPILE_JDK.outputs.path }}
+        TEST_JDK_VENDOR:     ${{ matrix.TEST_JDK_VENDOR }}
+        TEST_JDK_VERSION:    ${{ matrix.TEST_JDK_VERSION }}
+        TEST_JDK_HOME:       ${{ steps.SETUP_TEST_JDK.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        source /tmp/gha-shared/resources/maven/configure-maven.sh
+
+        # prevent "org.eclipse.swt.SWTError: No more handles [gtk_init_check() failed]" on Linux
+        ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" \' || '' }}
+        $maven \
+          -Declipse.p2.mirrors=false \
+          "-Dtycho.target-platform=$(basename "$TARGET_FILE" .target)" \
+          "-Dtycho.target-platform.file=$TARGET_FILE" \
+          "-Djava.vendor=$COMPILE_JDK_VENDOR" \
+          "-Djava.version=$COMPILE_JDK_VERSION" \
+          "-Djava.vendor.unit-tests=$TEST_JDK_VENDOR" \
+          "-Djava.version.unit-tests=$TEST_JDK_VERSION" \
+           ${{ inputs.extra-maven-args }} \
+          help:active-profiles clean verify || (
+            rc=$?
+            if [[ ${ACT:-} != "true" ]]; then
+              find . -path "*/target/work/data/.metadata/.log" | while IFS= read -r file; do
+                echo "::group::$file"
+                  cat "$file"
+                echo "::endgroup::"
+              done
+            fi
+            exit $rc
+          )
+
+
+    - name: Locate release archive
+      id: find_release_archive
+      if: ${{ matrix.RELEASE_NAME }}  # only when we're actually releasing
+      env:
+        RELEASE_ARCHIVE_GLOB: ${{ inputs.release-archive-glob }}
+        PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character '\u2705'" on Windows
+      shell: python {0}
+      run: |
+        # cannot use "shopt -s globstar nullglob; matches=( $RELEASE_ARCHIVE_GLOB )" which is not supported on MacOS default Bash 3.2
+        # falling back to python based solution
+        import itertools, glob, os, re, sys, shutil
+        def brace_expand(pattern: str):
+            # Expand simple {a,b,c} (not-nested) brace expressions inside *pattern*.
+        
+            # Find all {alt1,alt2} groups
+            parts        = re.split(r'(\{[^{}]+\})', pattern)
+            brace_groups = [p[1:-1].split(',') if p.startswith('{') else [p] for p in parts]
+        
+            expanded = [''.join(p) for p in itertools.product(*brace_groups)]
+            return list(dict.fromkeys(expanded)) # returns deduped patterns
+
+        matches = []
+        for glob_pattern in brace_expand(os.environ["RELEASE_ARCHIVE_GLOB"]):
+            matches.extend(glob.glob(glob_pattern, recursive=True))
+
+        if len(matches) == 0:
+            print(f"❌ No archive found matching '{os.environ['RELEASE_ARCHIVE_GLOB']}'", file=sys.stderr)
+            sys.exit(1)
+        if len(matches) > 1:
+            print(f"❌ Multiple archives found: {matches}", file=sys.stderr)
+            sys.exit(1)
+        print(f"✅ Found update-site archive: {matches[0]}")
+
+        with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+            out.write(f"archive={matches[0]}\n")
+
+
+    - name: "Delete previous '${{ matrix.RELEASE_NAME }}' release"
+      if: ${{ matrix.RELEASE_NAME }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_NAME: ${{ matrix.RELEASE_NAME }}
+      # https://cli.github.com/manual/gh_release_delete
+      run: |
+        GH_DEBUG=1 gh release delete "$RELEASE_NAME" --yes --cleanup-tag || true
+
+
+    - name: "Create '${{ matrix.RELEASE_NAME }}' release"
+      if: ${{ matrix.RELEASE_NAME }}
+      env:
+        GITHUB_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        COMMIT_MSG:    ${{ github.event.head_commit.message }}  # https://stackoverflow.com/a/78420438/5116073
+        RELEASE_NAME:  ${{ matrix.RELEASE_NAME }}
+        RELEASE_ARCHIVE: ${{ steps.find_release_archive.outputs.archive }}
+        RELEASE_ARCHIVE_NAME: ${{ inputs.release-archive-name }}
+      # https://cli.github.com/manual/gh_release_create
+      run: |
+        GH_DEBUG=1 gh release create "$RELEASE_NAME" \
+          --title "$RELEASE_NAME" \
+          ${{ matrix.RELEASE_NAME == 'stable' && '--latest' || '' }} \
+          ${{ matrix.RELEASE_NAME == 'preview' && '--prerelease' || '' }} \
+          --notes "$COMMIT_MSG" \
+          --target "${{ github.sha }}" \
+          "${RELEASE_ARCHIVE}#${RELEASE_ARCHIVE_NAME}"
+
+
+    - name: Deploy p2 update site
+      if: ${{ matrix.RELEASE_NAME }}
+      env:
+        GITHUB_USER:  ${{ github.actor }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPO:  ${{ github.repository }}
+        BRANCH_NAME:  ${{ matrix.UPDATESITE_BRANCH }}
+        RELEASE_ARCHIVE: ${{ steps.find_release_archive.outputs.archive }}
+      run: |
+        set -euo pipefail
+
+        last_commit_message=$(git log --pretty=format:"%s (%h)" -1)
+
+        # https://github.community/t/github-actions-bot-email-address/17204
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        cd /tmp
+        github_repo_url="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/$GITHUB_REPO"
+        if curl --output /dev/null --silent --head --fail "$github_repo_url/tree/$BRANCH_NAME"; then
+          git clone "$github_repo_url" --single-branch --branch "$BRANCH_NAME" updatesite
+          cd updatesite
+          git reset --hard HEAD^  # revert previous commit
+        else
+          git clone "$github_repo_url" updatesite
+          cd updatesite
+          git checkout --orphan "$BRANCH_NAME"
+          git rm -rf .
+          cat <<EOF > index.html
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>$GITHUB_REPO - Update Site</title>
+            </head>
+            <body>
+            <h1>$$GITHUB_REPO - Update Site</h1>
+            </body>
+            </html>
+        EOF
+          git add index.html
+          git commit -am "Initialize Update Site"
+        fi
+
+        jar xf "$GITHUB_WORKSPACE/$RELEASE_ARCHIVE"
+        git add --all
+        git commit -am "$last_commit_message"
+        git push origin "$BRANCH_NAME" --force
+
+
+    - name: "After Build: Custom Bash script"
+      if: inputs.after-build
+      env:
+        GITHUB_JOB_ID: ${{ github.job }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: ${{ inputs.after-build }}
+
+
+    ##################################################
+    # Cache Update
+    # See https://github.com/actions/cache/issues/342#issuecomment-1399442670
+    ##################################################
+    - name: "Cache: Delete Outdated (Local Maven Repository)"
+      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() && steps.CACHE-RESTORE-MAVEN.outputs.cache-hit && !env.ACT }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh extension install actions/gh-actions-cache
+        # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
+        gh actions-cache delete ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }} --confirm || true
+
+    - name: "Cache: Save (Local Maven Repository)"
+      uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
+      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() }} # save the cache even when the build failed
+      with:
+        path: |
+          ~/.m2/bin
+          ~/.m2/repository/*
+          !~/.m2/repository/.cache
+          !~/.m2/repository/.meta
+          !~/.m2/repository/com/vegardit/no-npe
+          !~/.m2/repository/p2
+          !~/.m2/repository/*SNAPSHOT*
+        key: ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }}
+
+
+    - name: "Cache: Delete Outdated (Local Tycho Repository)"
+      if: ${{ matrix.CAN_UPDATE_TYCHO_CACHE && always() && !cancelled() && steps.CACHE-RESTORE-TYCHO.outputs.cache-hit && !env.ACT }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
+        gh actions-cache delete ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }} --confirm || true
+
+
+    - name: "Cache: Save (Local Tycho Repository)"
+      uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
+      if: ${{ matrix.CAN_UPDATE_TYCHO_CACHE && always() && !cancelled() }} # save the cache even when the build failed
+      with:
+        # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found
+        path: |
+          ~/.m2/repository/.cache/tycho
+          ~/.m2/repository/.meta/p2-artifacts.properties
+          ~/.m2/repository/p2
+        key: ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }}
+
+
+    - name: Collect coverage reports
+      uses: actions/upload-artifact@v4
+      if: matrix.UPLOAD_TO_CODECOV && (github.ref_name == 'main' || github.event_name == 'pull_request') && !env.ACT
+      with:
+        name: coverage-java${{ matrix.TEST_JDK_VERSION }}
+        include-hidden-files: true
+        path: ${{ github.workspace }}/**/target/site/jacoco*/jacoco.xml
+        if-no-files-found: 'error'
+
+
+    - name: Upload test results to Codecov
+      uses: codecov/test-results-action@v1
+      if: matrix.UPLOAD_TO_CODECOV && !cancelled() && !env.ACT
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ${{ github.workspace }}/**/target/surefire-reports/TEST-*.xml
+        flags: jdk${{ matrix.TEST_JDK_VERSION }}
+
+
+    ##################################################
+    # Setup SSH debug session
+    ##################################################
+    - name: "SSH session for debugging: check"
+      id: DEBUG_SSH_SESSSION_CHECK
+      if: always()
+      env:
+        JOB_STATUS: ${{ job.status }}
+        JAVA_VERSION: ${{ matrix.TEST_JDK_VERSION }}
+      run: |
+        set -eu
+        job_filter_pattern="${{ inputs.debug-with-ssh-only-jobs-matching }}"
+        echo "job_filter: $job_filter_pattern"
+
+        job_info=$(echo "$GITHUB_JOB ${{ runner.os }} java-$JAVA_VERSION" | tr -d '\n')
+        echo "job_info: $job_info"
+
+        when="${{ inputs.debug-with-ssh }}"
+
+        shopt -s nocasematch # case-insensitive regex matching
+        if [[ $when == "always" ]] || { [[ "$job_info" =~ .*$job_filter_pattern.* ]] && case "$JOB_STATUS" in
+          success)   [[ $when == "always" ]] ;;
+          cancelled) [[ $when == "on_failure_or_cancelled" ]] ;;
+          failure)   [[ $when == "on_failure"* ]] ;;
+        esac }; then
+          echo "start_ssh_session=true" | tee -a "$GITHUB_OUTPUT"
+        fi
+
+
+    - name: "SSH session for debugging: start"
+      uses: mxschmitt/action-tmate@v3  # https://github.com/mxschmitt/action-tmate
+      if: always() && steps.DEBUG_SSH_SESSSION_CHECK.outputs.start_ssh_session
+      with:
+        limit-access-to-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
+
+
+    ##################################################
+    # Export metadata
+    ##################################################
+    - name: Set job outputs
+      id: OUTPUTS
+      if: ${{ matrix.RELEASE_NAME && success() }}
+      run: |
+        set -euo pipefail
+
+        # A preview or stable release was **intended** for this cell.
+        # Check whether a tag now points at HEAD.
+        tag=$(git describe --exact-match --tags HEAD 2>/dev/null || true)
+
+        echo "RELEASE_NAME=${{ matrix.RELEASE_NAME }}" >>"$GITHUB_OUTPUT"
+        echo "RELEASE_UPDATESITE_BRANCH=${{ matrix.UPDATESITE_BRANCH }}" >>"$GITHUB_OUTPUT"
+
+
+    outputs:
+      RELEASE_NAME:              ${{ steps.OUTPUTS.outputs.RELEASE_NAME }}
+      RELEASE_UPDATESITE_BRANCH: ${{ steps.OUTPUTS.outputs.RELEASE_UPDATESITE_BRANCH }}
+
+
+  ###########################################################
+  publish-coverage:
+  ###########################################################
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: needs.init.outputs.HAS_CODECOV_TOKEN && (github.ref_name == inputs.development-branch || github.event_name == 'pull_request') && !github.event.act
+    steps:
+    - name: Git Checkout  # required to avoid https://docs.codecov.com/docs/error-reference#unusable-reports
+      uses: actions/checkout@v4  # https://github.com/actions/checkout
+
+
+    - name: Download coverage reports
+      uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-*
+        path: coverage
+
+
+    - name: List coverage reports
+      run: find . -name jacoco.xml 
+
+
+    - name: Publish unit-test coverage
+      uses: codecov/codecov-action@v5  # https://github.com/codecov/codecov-action
+      with:
+        slug: ${{ github.repository }}
+        name: unit-coverage
+        flags: unit-tests
+        disable_search: true
+        files: coverage/**/jacoco/jacoco.xml
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+
+    - name: Publish integration-test coverage
+      uses: codecov/codecov-action@v5  # https://github.com/codecov/codecov-action
+      with:
+        slug: ${{ github.repository }}
+        name: integration-coverage
+        flags: integration-tests
+        disable_search: true
+        files: coverage/**/jacoco-it/jacoco.xml
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+
+    - name: "Delete intermediate build artifacts"
+      uses: geekyeggo/delete-artifact@v5  # https://github.com/GeekyEggo/delete-artifact/
+      with:
+        name: "*"
+        failOnError: false
+
+
+  ###########################################################
+  dependabot-pr-auto-merge:
+  ###########################################################
+    needs: build
+    if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+
+    concurrency: dependabot-pr-auto-merge
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Dependabot metadata
+      id: metadata
+      uses: dependabot/fetch-metadata@v2  # https://github.com/dependabot/fetch-metadata/
+      with:
+        github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+
+    - name: Enable auto-merge for Dependabot PRs
+      if: >-
+        ${{
+          (
+            steps.metadata.outputs.package-ecosystem == 'github-actions' && 
+            steps.metadata.outputs.update-type == 'version-update:semver-major'
+          ) || (
+            steps.metadata.outputs.package-ecosystem == 'maven' && 
+            steps.metadata.outputs.update-type == 'version-update:semver-minor'
+          )
+        }}
+      env:
+        PR_URL: ${{github.event.pull_request.html_url}}
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      run: |
+        gh pr merge --auto --rebase "$PR_URL"

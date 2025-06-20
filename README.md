@@ -6,6 +6,8 @@
 1. [What is it?](#what-is-it)
 1. [Reusable Workflows](#reusable-workflows)
    1. [Maven Build](#reusable-workflow-maven-build)
+   1. [Eclipse Plugin Build](#reusable-workflow-eclipse-plugin-build)
+   1. [Eclipse Product Build](#reusable-workflow-product-plugin-build)
 1. [Shared Actions](#shared-actions)
    1. [Stale](#shared-action-stale)
 1. [License](#license)
@@ -20,9 +22,12 @@ These components help standardize CI/CD pipelines across multiple repositories b
 
 ## <a name="reusable-workflows"></a>Reusable Workflows
 
-| Workflow Name | Path                                         | Description
-| ------------- | -------------------------------------------- | -----------
-| Maven Build   | `.github/workflows/reusable.maven-build.yml` | Builds, tests, and optionally releases Maven projects with multi-JDK matrix.
+| Workflow Name         | Path                                                   | Description
+| ----------------------| ------------------------------------------------------ | -----------
+| Maven Build           | `.github/workflows/reusable.maven-build.yml`           | Builds, tests, and releases Maven projects with multi-JDK matrix.
+| Eclipse Plugin Build  | `.github/workflows/reusable.eclipse-plugin-build.yml`  | Builds, tests, and releases Eclipse plugins.
+| Eclipse Product Build | `.github/workflows/reusable.eclipse-product-build.yml` | Builds, tests, and releases Eclipse products.
+
 
 ### <a name="reusable-workflow-maven-build"></a>Reusable Workflow: Maven Build
 
@@ -48,7 +53,7 @@ on:
         type: choice
         options: [ always, on_failure, on_failure_or_cancelled, never ]
       debug-with-ssh-only-for-actor:
-        description: "Limit access to the SSH session to the GitHub user that triggered the job."
+        description: "Restrict SSH debug session access to the GitHub user who triggered the workflow"
         default: true
         type: boolean
 
@@ -129,6 +134,119 @@ jobs:
 | `CODECOV_TOKEN`          | Codecov upload token for publishing test coverage reports.
 
 *For full details, see the [.github/workflows/reusable.maven-build.yml](.github/workflows/reusable.maven-build.yml)*
+
+
+### <a name="reusable-workflow-eclipse-plugin-build"></a>Reusable Workflow: Eclipse Plugin Build
+
+To use the **Eclipse Plugin Build** workflow, reference its YAML file in your repository's workflow definition.
+
+#### Example
+
+```yaml
+name: Maven CI
+on:
+  push:
+    branches-ignore:  # build all branches except:
+    - 'dependabot/**'  # prevent GHA triggered twice (once for commit to the branch and once for opening/syncing the PR)
+    tags-ignore:  # don't build tags
+    - '**'
+  pull_request:
+  workflow_dispatch:
+    # https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_dispatch
+    inputs:
+      debug-with-ssh:
+        description: "Start an SSH session for debugging purposes at the end of the build:"
+        default: never
+        type: choice
+        options: [ always, on_failure, on_failure_or_cancelled, never ]
+      debug-with-ssh-only-for-actor:
+        description: "Restrict SSH debug session access to the GitHub user who triggered the workflow"
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    uses: sebthom/gha-shared/.github/workflows/reusable.eclipse-plugin-build.yml@v1
+    with:
+      timeout-minutes: 30
+
+      target-files: |
+        target-platforms/oldest.target
+        target-platforms/latest.target
+        target-platforms/unstable.target!
+
+      development-branch: main
+      development-updatesite-branch: updatesite-preview
+      release-branch: release
+      release-updatesite-branch: updatesite
+      release-archive-name: org.haxe4e.plugin.updatesite.zip
+
+      debug-with-ssh: ${{ inputs.debug-with-ssh || 'never' }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+      debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
+
+    permissions:
+      actions: write       # to delete action cache entries
+      contents: write      # to create releases (commit to updatesite branches)
+      pull-requests: write # for dependabot auto merges
+```
+
+*For full details, see the [.github/workflows/reusable.eclipse-plugin-build.yml](.github/workflows/reusable.eclipse-plugin-build.yml)*
+
+
+### <a name="reusable-workflow-eclipse-product-build"></a>Reusable Workflow: Eclipse Product Build
+
+To use the **Eclipse Product Build** workflow, reference its YAML file in your repository's workflow definition.
+
+#### Example
+
+```yaml
+name: Maven CI
+on:
+  push:
+    branches-ignore:  # build all branches except:
+    - 'dependabot/**'  # prevent GHA triggered twice (once for commit to the branch and once for opening/syncing the PR)
+    tags-ignore:  # don't build tags
+    - '**'
+  pull_request:
+  workflow_dispatch:
+    # https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_dispatch
+    inputs:
+      debug-with-ssh:
+        description: "Start an SSH session for debugging purposes at the end of the build:"
+        default: never
+        type: choice
+        options: [ always, on_failure, on_failure_or_cancelled, never ]
+      debug-with-ssh-only-for-actor:
+        description: "Restrict SSH debug session access to the GitHub user who triggered the workflow"
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    uses: sebthom/gha-shared/.github/workflows/reusable.eclipse-product-build.yml@v1
+    with:
+      timeout-minutes: 30
+
+      product-files: product/haxe-studio.product
+      target-files: build.target
+
+      development-branch: main
+      development-updatesite-branch: updatesite-preview
+      release-branch: release
+      release-updatesite-branch: updatesite
+
+      debug-with-ssh: ${{ inputs.debug-with-ssh || 'never' }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+
+    permissions:
+      actions: write       # to delete action cache entries
+      contents: write      # to create releases (commit to updatesite branches)
+      pull-requests: write # for dependabot auto merges
+```
+
+*For full details, see the [.github/workflows/reusable.eclipse-product-build.yml](.github/workflows/reusable.eclipse-product-build.yml)*
+
 
 ## <a name="shared-actions"></a>Shared Actions
 
