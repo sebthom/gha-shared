@@ -173,6 +173,7 @@ jobs:
     - name: Parse inputs
       id: PARSE_INPUTS
       env:
+        PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
         RUNS_ON:        ${{ inputs.runs-on }}
         COMPILE_JDK:    ${{ inputs.compile-jdk }}
         TEST_JDKS:      ${{ inputs.test-jdks }}
@@ -404,6 +405,8 @@ jobs:
     - name: Configure JDKs ☕
       id: JDKS
       run: |
+        set -euo pipefail
+
         function get_java_home() {
           local java_home_varname="JAVA${1}_${2}_HOME"
           java_home_varname="$(printf '%s' "$java_home_varname" | tr '[:lower:]' '[:upper:]')"

@@ -1,7 +1,7 @@
 # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
 name: Install JDKs
 description: >
-  Installs Java JDKs via SDKMAN!, reusing pre-installed JDKs on the runner.
+  Installs Java JDKs via SDKMAN!, reusing pre-installed JDKs on the runner and registers them with ~/.m2/toolchains.xml.
   For each requested version it exports environment variables of the form:
   - JAVA<MAJOR>_HOME — the JDK home directory (e.g. JAVA21_HOME)
   - JAVA<MAJOR>_<VENDOR>_HOME — same, but keyed by the vendor (e.g. JAVA21_TEMURIN_HOME)
@@ -17,132 +17,217 @@ runs:
   steps:
   - name: Install JDKs ☕
     id: JDKS
-    shell: bash
+    shell: python {0}
     env:
+      PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
       REQUIRED_JDKS: ${{ inputs.jdks }}
     run: |
-        set -eo pipefail
-
-        function ensure_sdkman_installed() {
-          if hash sdk &>/dev/null; then
-            return 0  # already installed
-          fi
-          echo "::group::Install SDKMAN!"
-          if [[ $RUNNER_OS == "Windows" ]]; then
-            if ! hash zip &>/dev/null; then
-              mkdir -p "$HOME/zip"
-              curl -sSfL https://raw.githubusercontent.com/ScoopInstaller/Binary/master/zip/x64/zip300xn-x64.zip -o /tmp/zip300xn-x64.zip
-              unzip -o /tmp/zip300xn-x64.zip -d "$HOME/zip"
-              export PATH="$PATH:$HOME/zip"
-              zip --help
-            fi
-          fi
-          if [[ ! -f $HOME/.sdkman/bin/sdkman-init.sh ]]; then
-            curl -sSfL "https://get.sdkman.io?rcupdate=false&ci=true" | bash
-          fi
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          echo "::endgroup::"
-        }
-
-        map_vendor() {
+      import glob, os, pathlib, re, subprocess, sys, typing, xml.etree.ElementTree as ET
+      ENV = os.environ    
+      HOME = pathlib.Path.home()
+      GITHUB_ENV  = pathlib.Path(ENV["GITHUB_ENV"])
+      GITHUB_PATH = pathlib.Path(ENV["GITHUB_PATH"])
+      RUNNER_TOOL_CACHE = pathlib.Path(ENV.get("RUNNER_TOOL_CACHE", "/opt/hostedtoolcache"))
+  
+      VENDOR_MAP = {
           # https://github.com/actions/setup-java#supported-distributions
           # https://api.sdkman.io/2/candidates/java/linux/versions/list?installed=
-          local tok="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"  # ${1,,} alternative that works on MacOS Bash 3.2
-          case "$tok" in
-            *temurin*)    echo "tem" ;;
-            *zulu*)       echo "zulu" ;;
-            *liberica*)   echo "librca";;
-            *microsoft*)  echo "ms" ;;
-            *corretto*)   echo "amzn" ;;
-            *semeru*)     echo "sem" ;;
-            *oracle*)     echo "oracle" ;;
-            *dragonwell*) echo "dragonwell" ;;
-            *sapmachine*) echo "sapmchn" ;;
-            *graalvm*)    echo "graal" ;;
-            *jetbrains*)  echo "jbr" ;;
-            *)            echo "$tok" ;;
-          esac
-        }
+          "temurin": "tem",
+          "zulu": "zulu",
+          "liberica": "librca",
+          "microsoft": "ms",
+          "corretto": "amzn",
+          "semeru": "sem",
+          "oracle": "oracle",
+          "dragonwell": "dragonwell",
+          "sapmachine": "sapmchn",
+          "graalvm": "graal",
+          "jetbrains": "jbr",
+      }
+      def map_vendor(raw: str) -> str:
+          raw = raw.lower()
+          for k, v in VENDOR_MAP.items():
+              if k in raw:
+                  return v
+          return raw
 
-        jdk_ids=()    # jdk_ids[i]   : e.g. 21-tem
-        jdk_homes=()  # jdk_homes[i] : e.g. /usr/lib/jvm/…
-    
-        function register_jdk() {
-          jdk_ids+=("$1")
-          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-            jdk_homes+=($(cygpath -w -- "$2"))
-          else
-            jdk_homes+=("$2")
-          fi
-          echo "➤ Registering JDK [$id] -> $2..."
-        }
-        function get_jdk_home() {
-          local i id="$1-$(map_vendor "$2")"
-          for (( i=0; i<${#jdk_ids[@]}; i++ )); do
-            [[ "${jdk_ids[i]}" == "$id" ]] && { printf '%s\n' "${jdk_homes[i]}"; return 0; }
-          done
-          return 1
-        }
-
-        echo "::group::Scanning pre-installed JDKs"       
-          for ver_dir in "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/Java_*_jdk/*; do
-            [[ -d $ver_dir ]] || continue
-            if [[ $RUNNER_OS == "Windows" ]]; then
-              java_exec=$(find "$ver_dir" -maxdepth 6 -type f -path '*/bin/java.exe' -print -quit)
-            else
-              java_exec=$(find -L "$ver_dir" -maxdepth 6 -type f -path '*/bin/java' -print -quit)
-            fi
-            [[ -x "$java_exec" ]] || continue
-            java_home="$(cd "$(dirname "$java_exec")/.." && pwd -P)"
-
-            jdk_ver="$(basename "$ver_dir")"  # 21.0.7-6
-            jdk_ver="${jdk_ver%%-*}"          # 21.0.7-6 -> 21.0.7
-            jdk_major="${jdk_ver%%.*}"        # 21.0.7 -> 21
-            jdk_dist="$(basename "$(dirname "$ver_dir")")"  # Java_Temurin-Hotspot_jdk
-            jdk_dist="${jdk_dist#Java_}"                    # Java_Temurin-Hotspot_jdk -> Temurin-Hotspot_jdk
-            jdk_dist="${jdk_dist%_jdk}"                     # Temurin-Hotspot_jdk -> Temurin-Hotspot
-            sdkman_jdk_dist="$(map_vendor "$jdk_dist")"
-            id="${jdk_major}-${sdkman_jdk_dist}"
-            register_jdk "$id" "$java_home"
-          done
-        echo "::endgroup::"
-
-        echo "::group::Installing required JDKs"
-          while IFS= read -r raw; do
-            # split comma-separated lines if the user mixed formats
-            IFS=',' read -ra parts <<<"$raw"
-            for jdk_spec in "${parts[@]}"; do
-              jdk_spec="${jdk_spec//[[:space:]]/}"  # trim all whitespace
-              [[ -z $jdk_spec ]] && continue
-
-              # parse <dist>@<version> or <version>
-              if [[ $jdk_spec == *@* ]]; then
-                jdk_dist="${jdk_spec%@*}"
-                jdk_ver="${jdk_spec#*@}"
-              else
-                jdk_dist="temurin"
-                jdk_ver="$jdk_spec"
-              fi
-              jdk_spec="$jdk_dist@$jdk_major"
-              jdk_major="${jdk_ver%%.*}"
-              if ! jdk_home=$(get_jdk_home "$jdk_major" "$jdk_dist"); then
-                ensure_sdkman_installed
-                id="${jdk_major}-$(map_vendor "$jdk_dist")"  
-                echo "➤ Installing JDK [$jdk_spec] via SDKMAN!"
-                sdk install java "$id"
-                jdk_home="$(sdk home java "$id")"
-                register_jdk "$id" "$jdk_home"
-              else
-                echo "✓ Reusing pre-installed JDK [$jdk_spec] at $jdk_home"
-              fi
+      def append(file: pathlib.Path, line: str):
+          file.write_text(file.read_text() + line + "\n" if file.exists() else line + "\n")
   
-              jdk_dist_upper=$(printf '%s' "$jdk_dist" | tr '[:lower:]' '[:upper:]')  # ${jdk_dist^^} alternative that works on MacOS Bash 3.2
-              echo "JAVA${jdk_major}_HOME=$jdk_home" >>"$GITHUB_ENV"
-              echo "JAVA${jdk_major}_${jdk_dist_upper}_HOME=$jdk_home" >>"$GITHUB_ENV"
-            done
-          done <<<"$REQUIRED_JDKS"
-        echo "::endgroup::"
+      def download_file(url: str, target_file: str = None, chunk_size: int = 8192) -> pathlib.Path:
+          import tempfile, urllib.request
+          if target_file is None:
+              tmp = tempfile.NamedTemporaryFile(delete=False)
+              target_path = pathlib.Path(tmp.name)
+              tmp.close()
+          else:
+              target_path = pathlib.Path(target_file)
+              target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        echo "::group::GITHUB_ENV"
-        sort -u "$GITHUB_ENV"
-        echo "::endgroup::"
+          with urllib.request.urlopen(url) as src, open(target_path, "wb") as dst:
+              while True:
+                  chunk = src.read(chunk_size)
+                  if not chunk: break
+                  dst.write(chunk)     
+          return target_path
+
+      def execute(*cmd, **kwargs) -> subprocess.CompletedProcess:
+          if len(cmd) == 1 and isinstance(cmd[0], (list, tuple)):
+              cmd_list = list(cmd[0])
+          else:
+              cmd_list = list(cmd)
+          if cmd_list[0] == "bash" and ENV["RUNNER_OS"] == "Windows":
+             cmd_list[0] = "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+          try:
+              return subprocess.run(cmd_list, capture_output=True, text=True, check=True, **kwargs)
+          except subprocess.CalledProcessError as e:
+              print(f"Command failed: {' '.join(e.cmd)}", file=sys.stderr)
+              if e.stdout:
+                  print("---- STDOUT ----", file=sys.stderr)
+                  print(e.stdout, file=sys.stderr)
+              if e.stderr:
+                  print("---- STDERR ----", file=sys.stderr)
+                  print(e.stderr, file=sys.stderr)
+              raise
+
+      def ensure_sdkman_installed():
+          import shutil, zipfile
+          if shutil.which("sdk"):
+              return
+          print("::group::Install SDKMAN!")
+          if ENV["RUNNER_OS"] == "Windows" and not shutil.which("zip"):
+              zip_install_dir = HOME / "zip"
+              zip_archive = download_file("https://raw.githubusercontent.com/ScoopInstaller/Binary/master/zip/x64/zip300xn-x64.zip")
+              zip_install_dir.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(zip_archive, "r") as zfh:
+                  zfh.extractall(zip_install_dir)
+              zip_archive.unlink()
+              ENV["PATH"] = str(zip_install_dir) + os.pathsep + ENV["PATH"]
+              append(GITHUB_PATH, str(zip_install_dir))
+          sdk_init = HOME/".sdkman/bin/sdkman-init.sh"
+          if not sdk_init.exists():
+              sdkman_installer = download_file("https://get.sdkman.io?rcupdate=false&ci=true")
+              print(execute("bash", str(sdkman_installer)).stdout)
+          print("::endgroup::")
+
+
+      ############################################################################
+      # scan pre-installed JDKs
+      ############################################################################
+      print("::group::Scanning pre-installed JDKs")
+      registered_jdks = {} 
+      def register_jdk(jid:str, java_home:typing.Union[str, pathlib.Path]):
+          if ENV["RUNNER_OS"] == "Windows":
+              registered_jdks[jid] = str(java_home)
+          else:
+              registered_jdks[jid] = str(java_home)
+          print(f"➤ Registering JDK [{jid}] → {java_home}")
+
+      for ver_dir in RUNNER_TOOL_CACHE.glob("Java_*_jdk/*"):
+          if not ver_dir.is_dir(): continue
+          pattern = "**/bin/java.exe" if ENV["RUNNER_OS"] == "Windows" else "**/bin/java"
+          
+          # cannot use ver_dir.glob(pattern) as it does not follow symlinks prior Python 3.13,
+          # see https://bugs.python.org/issue33428
+          #   try: java_exec = next(ver_dir.glob(pattern))
+          #   except StopIteration: continue
+          # as a workaround falling back to glob.iglob
+  
+          java_exec = next(glob.iglob(os.path.join(str(ver_dir), pattern), recursive=True), None)
+          if not java_exec:
+             continue
+          java_exec = pathlib.Path(java_exec)
+
+          java_home = java_exec.parent.parent.resolve()
+  
+          full_version = ver_dir.name.split("-")[0]  # 17.0.15-1 -> 17.0.15
+          major = full_version.split(".")[0]         # 17.0.15 -> 17
+          raw_vendor = ver_dir.parent.name           # "Java_Temurin-Hotspot_jdk"
+          raw_vendor = re.sub(r"^Java_|_jdk$", "", raw_vendor)  # Java_Temurin-Hotspot_jdk -> Temurin-Hotspot
+          sdkman_jdk_dist = map_vendor(raw_vendor)   # Temurin-Hotspot -> tem
+          id=f"{major}-{sdkman_jdk_dist}"
+          register_jdk(id, str(java_home))
+      print("::endgroup::")
+
+
+      ############################################################################
+      # install requested JDKs
+      ############################################################################
+      print("Installing required JDKs...")
+      toolchains_file = HOME/".m2/toolchains.xml"
+      toolchains_file.parent.mkdir(parents=True, exist_ok=True)
+      if toolchains_file.exists():
+          tree = ET.parse(toolchains_file)
+          root = tree.getroot()
+      else:
+          root = ET.Element("toolchains", attrib={
+              "xmlns": "http://maven.apache.org/TOOLCHAINS/1.1.0",
+              "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+              "xsi:schemaLocation": "http://maven.apache.org/TOOLCHAINS/1.1.0 "
+                                    "http://maven.apache.org/xsd/toolchains-1.1.0.xsd"})
+          tree = ET.ElementTree(root)
+
+      def ensure_toolchain_entry(major:str, vendor:str, java_home:str):
+          for tc in root.findall("./toolchain"):
+              if (tc.findtext("./type") == "jdk" and
+                  tc.findtext("./provides/version") == major and
+                  tc.findtext("./provides/vendor") == vendor
+              ):
+                  tc.find("./configuration/jdkHome").text = java_home
+                  return
+
+          tc = ET.SubElement(root, "toolchain")
+          ET.SubElement(tc, "type").text="jdk"
+          prov = ET.SubElement(tc, "provides")
+          ET.SubElement(prov, "version").text = major
+          ET.SubElement(prov, "vendor").text  = vendor
+          conf = ET.SubElement(tc, "configuration")
+          ET.SubElement(conf, "jdkHome").text = java_home
+
+      required_specs = re.split(r"[,\n]+", ENV["REQUIRED_JDKS"].strip())
+      for spec in filter(None, required_specs):
+          spec = spec.strip()
+          if "@" in spec:
+              dist, ver = spec.split("@",1)
+          else:
+              dist, ver = "temurin", spec
+          major = ver.split(".")[0]
+          sdkman_jdk_dist = map_vendor(dist)
+          jid = f"{major}-{sdkman_jdk_dist}"
+
+          if jid not in registered_jdks:
+              ensure_sdkman_installed()
+              print(f"::group::Installing {spec} via SDKMAN!")
+              print(execute("bash", "-c", f"source $HOME/.sdkman/bin/sdkman-init.sh && sdk install java {jid}").stdout)
+              java_home = execute("bash", "-c", f"source $HOME/.sdkman/bin/sdkman-init.sh && sdk home java {jid}").stdout.strip()
+              register_jdk(jid, java_home)
+          else:
+              print(f"::group::✓ Reusing pre-installed {spec} at {java_home}")
+              java_home = registered_jdks[jid]
+
+          append(GITHUB_ENV, f"JAVA{major}_HOME={java_home}")
+          append(GITHUB_ENV, f"JAVA{major}_{dist.upper()}_HOME={java_home}")
+
+          ensure_toolchain_entry(major, "default", java_home)
+          ensure_toolchain_entry(major, dist, java_home)
+          ensure_toolchain_entry(major, dist.upper(), java_home)
+          print("::endgroup::")
+
+      ET.indent(tree, space="  ", level=0)
+      tree.write(toolchains_file, encoding="utf-8", xml_declaration=True)
+      
+      print("::group::~/.m2/toolchains.xml")
+      with open(toolchains_file, "r", encoding="utf-8") as fh:
+          sys.stdout.write(fh.read())
+      print("::endgroup::")
+
+
+      ############################################################################
+      # log GITHUB_ENV content
+      ############################################################################
+      print("::group::GITHUB_ENV")
+      lines = [l.strip() for l in GITHUB_ENV.read_text().splitlines()]
+      unique = sorted(set(filter(None, lines)))
+      for line in unique:
+          print(line)
+      print("::endgroup::")

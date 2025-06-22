@@ -160,6 +160,7 @@ jobs:
     - name: Parse inputs
       id: PARSE_INPUTS
       env:
+        PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
         MAVEN_JDK:      ${{ inputs.maven-jdk }}
         MAVEN_VERSIONS: ${{ inputs.maven-versions }}
         PRODUCT_FILES:   ${{ inputs.product-files }}
