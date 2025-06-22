@@ -513,9 +513,17 @@ jobs:
       if: ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-hit }}
       id: MOVE_RESTORED_MAVEN_REPO
       run: |
+        set -euxo pipefail
+        
         RESTORED_MAVEN_REPO_PATH=$HOME/.m2/repository-restored
-        (set -x; mv -v ~/.m2/repository "$RESTORED_MAVEN_REPO_PATH")
-        echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >> $GITHUB_OUTPUT
+
+        (set -x; ls -lart ~/.m2)
+        if [[ -d "$HOME/.m2/repository" ]]; then
+          (set -x; mv -v ~/.m2/repository "$RESTORED_MAVEN_REPO_PATH")
+        else
+          (set -x; mkdir -p "$RESTORED_MAVEN_REPO_PATH")
+        fi
+        echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >>$GITHUB_OUTPUT
 
 
     - name: "Before Build: Custom Bash script"
