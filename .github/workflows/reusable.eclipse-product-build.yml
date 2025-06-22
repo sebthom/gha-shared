@@ -367,7 +367,7 @@ jobs:
         GITHUB_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
         WORKFLOW_REPO:    ${{ inputs.gha-shared-repo }}    # e.g. sebthom/gha-shared
         WORKFLOW_VERSION: ${{ inputs.gha-shared-version }} # branch, tag or commit SHA
-        DEST: /tmp/gha-shared
+        DEST: ./.git/tmp/gha-shared
       run: |
         set -euo pipefail
 
@@ -397,29 +397,48 @@ jobs:
         (set -x; ls -l "$DEST")
 
 
-    - name: "Install: JDK ${{ matrix.COMPILE_JDK_VERSION }} ☕ (for compilation and tests)"
-      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
-      id: SETUP_COMPILE_JDK
+    - name: Install JDKs ☕
+      uses: ./.git/tmp/gha-shared/.github/actions/setup-java
       with:
-        distribution: ${{ matrix.COMPILE_JDK_VENDOR }}
-        java-version: ${{ matrix.COMPILE_JDK_VERSION }}
+        jdks: |
+          ${{ matrix.COMPILE_JDK_VENDOR }}@${{ matrix.COMPILE_JDK_VERSION }}
+          ${{ matrix.TEST_JDK_VENDOR    }}@${{ matrix.TEST_JDK_VERSION    }}
+          ${{ matrix.MAVEN_JDK_VENDOR   }}@${{ matrix.MAVEN_JDK_VERSION   }}
 
 
-    - name: "Install: JDK ${{ matrix.TEST_JDK_VERSION }} ☕ (for tests)"
-      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
-      id: SETUP_TEST_JDK
-      with:
-        distribution: ${{ matrix.TEST_JDK_VENDOR }}
-        java-version: ${{ matrix.TEST_JDK_VERSION }}
+    - name: Configure JDKs ☕
+      id: JDKS
+      run: |
+        function get_java_home() {
+          local java_home_varname="JAVA${1}_${2}_HOME"
+          java_home_varname="$(printf '%s' "$java_home_varname" | tr '[:lower:]' '[:upper:]')"
+          printf '%s\n' "${!java_home_varname}"
+        }
 
+        echo "COMPILE_JDK_HOME=$(get_java_home "${{ matrix.COMPILE_JDK_VERSION }}" "${{ matrix.COMPILE_JDK_VENDOR }}")" >>"$GITHUB_OUTPUT"
+        echo "TEST_JDK_HOME=$(get_java_home "${{ matrix.TEST_JDK_VERSION }}" "${{ matrix.TEST_JDK_VENDOR }}")" >>"$GITHUB_OUTPUT"
 
-    # Maven JDK must be installed last so it is the one on PATH
-    - name: "Install: JDK ${{ matrix.MAVEN_JDK_VERSION }} ☕ (to run Maven)"
-      uses: actions/setup-java@v4  # https://github.com/actions/setup-java
-      id: SETUP_MAVEN_JDK
-      with:
-        distribution: ${{ matrix.MAVEN_JDK_VENDOR }}
-        java-version: ${{ matrix.MAVEN_JDK_VERSION }}
+        # activate JDK for Maven
+        echo "Activating JDK [${{ matrix.MAVEN_JDK_VENDOR }}@${{ matrix.MAVEN_JDK_VERSION }}] for Maven..."
+        JAVA_HOME="$(get_java_home "${{ matrix.MAVEN_JDK_VERSION }}" "${{ matrix.MAVEN_JDK_VENDOR }}")"
+        if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+          echo "${JAVA_HOME}\\bin" >>"$GITHUB_PATH"
+        else
+          echo "${JAVA_HOME}/bin" >>"$GITHUB_PATH"
+        fi
+        echo "JAVA_HOME=${JAVA_HOME}" >>"$GITHUB_ENV"
+
+        echo "::group::GITHUB_PATH"
+          cat "$GITHUB_PATH"
+        echo "::endgroup::"
+
+        echo "::group::GITHUB_ENV"
+          cat "$GITHUB_ENV"
+        echo "::endgroup::"
+
+        echo "::group::GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+        echo "::endgroup::"
 
 
     - name: "Cache: Restore (Local Maven Repository)"
@@ -486,16 +505,16 @@ jobs:
         TARGET_FILE: ${{ matrix.TARGET_FILE }}
 
         MAVEN_VERSION:            ${{ matrix.MAVEN_VERSION }}
-        MAVEN_SETTINGS_FILE:      ${{ inputs.maven-settings-file || '/tmp/gha-shared/resources/maven/settings.xml' }}
-        MAVEN_TOOLCHAINS_FILE:    ${{ '/tmp/gha-shared/resources/maven/toolchains.xml' }}
+        MAVEN_SETTINGS_FILE:      ${{ inputs.maven-settings-file || './.git/tmp/gha-shared/resources/maven/settings.xml' }}
+        MAVEN_TOOLCHAINS_FILE:    ${{ './.git/tmp/gha-shared/resources/maven/toolchains.xml' }}
         RESTORED_MAVEN_REPO_PATH: ${{ steps.MOVE_RESTORED_MAVEN_REPO.outputs.REPO_PATH }}
 
         COMPILE_JDK_VENDOR:  ${{ matrix.COMPILE_JDK_VENDOR }}
         COMPILE_JDK_VERSION: ${{ matrix.COMPILE_JDK_VERSION }}
-        COMPILE_JDK_HOME:    ${{ steps.SETUP_COMPILE_JDK.outputs.path }}
+        COMPILE_JDK_HOME:    ${{ steps.JDKS.outputs.COMPILE_JDK_HOME }}
         TEST_JDK_VENDOR:     ${{ matrix.TEST_JDK_VENDOR }}
         TEST_JDK_VERSION:    ${{ matrix.TEST_JDK_VERSION }}
-        TEST_JDK_HOME:       ${{ steps.SETUP_TEST_JDK.outputs.path }}
+        TEST_JDK_HOME:       ${{ steps.JDKS.outputs.TEST_JDK_HOME }}
 
         # release toggles & credentials - will be unset for PR runs
         PRODUCT_FILE:         ${{ matrix.PRODUCT_FILE }}   # e.g. dart-studio.product
@@ -508,7 +527,7 @@ jobs:
       run: |
         set -euo pipefail
 
-        source /tmp/gha-shared/resources/maven/configure-maven.sh
+        source ./.git/tmp/gha-shared/resources/maven/configure-maven.sh
 
         $maven \
           -Declipse.p2.mirrors=false \

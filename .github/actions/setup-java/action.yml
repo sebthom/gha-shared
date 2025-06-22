@@ -1,0 +1,148 @@
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+name: Install JDKs
+description: >
+  Installs Java JDKs via SDKMAN!, reusing pre-installed JDKs on the runner.
+  For each requested version it exports environment variables of the form:
+  - JAVA<MAJOR>_HOME — the JDK home directory (e.g. JAVA21_HOME)
+  - JAVA<MAJOR>_<VENDOR>_HOME — same, but keyed by the vendor (e.g. JAVA21_TEMURIN_HOME)
+
+inputs:
+  jdks:
+    description: >
+      A comma- or newline-separated list of JDKs to install, specified either as a plain major version (e.g. `11`, `17`) or with vendor (e.g. `temurin@11`).
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+  - name: Install JDKs ☕
+    id: JDKS
+    shell: bash
+    env:
+      REQUIRED_JDKS: ${{ inputs.jdks }}
+    run: |
+        set -eo pipefail
+
+        function ensure_sdkman_installed() {
+          if hash sdk &>/dev/null; then
+            return 0  # already installed
+          fi
+          echo "::group::Install SDKMAN!"
+          if [[ $RUNNER_OS == "Windows" ]]; then
+            if ! hash zip &>/dev/null; then
+              mkdir -p "$HOME/zip"
+              curl -sSfL https://raw.githubusercontent.com/ScoopInstaller/Binary/master/zip/x64/zip300xn-x64.zip -o /tmp/zip300xn-x64.zip
+              unzip -o /tmp/zip300xn-x64.zip -d "$HOME/zip"
+              export PATH="$PATH:$HOME/zip"
+              zip --help
+            fi
+          fi
+          if [[ ! -f $HOME/.sdkman/bin/sdkman-init.sh ]]; then
+            curl -sSfL "https://get.sdkman.io?rcupdate=false&ci=true" | bash
+          fi
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          echo "::endgroup::"
+        }
+
+        map_vendor() {
+          # https://github.com/actions/setup-java#supported-distributions
+          # https://api.sdkman.io/2/candidates/java/linux/versions/list?installed=
+          local tok="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"  # ${1,,} alternative that works on MacOS Bash 3.2
+          case "$tok" in
+            *temurin*)    echo "tem" ;;
+            *zulu*)       echo "zulu" ;;
+            *liberica*)   echo "librca";;
+            *microsoft*)  echo "ms" ;;
+            *corretto*)   echo "amzn" ;;
+            *semeru*)     echo "sem" ;;
+            *oracle*)     echo "oracle" ;;
+            *dragonwell*) echo "dragonwell" ;;
+            *sapmachine*) echo "sapmchn" ;;
+            *graalvm*)    echo "graal" ;;
+            *jetbrains*)  echo "jbr" ;;
+            *)            echo "$tok" ;;
+          esac
+        }
+
+        jdk_ids=()    # jdk_ids[i]   : e.g. 21-tem
+        jdk_homes=()  # jdk_homes[i] : e.g. /usr/lib/jvm/…
+    
+        function register_jdk() {
+          jdk_ids+=("$1")
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            jdk_homes+=($(cygpath -w -- "$2"))
+          else
+            jdk_homes+=("$2")
+          fi
+          echo "➤ Registering JDK [$id] -> $2..."
+        }
+        function get_jdk_home() {
+          local i id="$1-$(map_vendor "$2")"
+          for (( i=0; i<${#jdk_ids[@]}; i++ )); do
+            [[ "${jdk_ids[i]}" == "$id" ]] && { printf '%s\n' "${jdk_homes[i]}"; return 0; }
+          done
+          return 1
+        }
+
+        echo "::group::Scanning pre-installed JDKs"       
+          for ver_dir in "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/Java_*_jdk/*; do
+            [[ -d $ver_dir ]] || continue
+            if [[ $RUNNER_OS == "Windows" ]]; then
+              java_exec=$(find "$ver_dir" -maxdepth 6 -type f -path '*/bin/java.exe' -print -quit)
+            else
+              java_exec=$(find -L "$ver_dir" -maxdepth 6 -type f -path '*/bin/java' -print -quit)
+            fi
+            [[ -x "$java_exec" ]] || continue
+            java_home="$(cd "$(dirname "$java_exec")/.." && pwd -P)"
+
+            jdk_ver="$(basename "$ver_dir")"  # 21.0.7-6
+            jdk_ver="${jdk_ver%%-*}"          # 21.0.7-6 -> 21.0.7
+            jdk_major="${jdk_ver%%.*}"        # 21.0.7 -> 21
+            jdk_dist="$(basename "$(dirname "$ver_dir")")"  # Java_Temurin-Hotspot_jdk
+            jdk_dist="${jdk_dist#Java_}"                    # Java_Temurin-Hotspot_jdk -> Temurin-Hotspot_jdk
+            jdk_dist="${jdk_dist%_jdk}"                     # Temurin-Hotspot_jdk -> Temurin-Hotspot
+            sdkman_jdk_dist="$(map_vendor "$jdk_dist")"
+            id="${jdk_major}-${sdkman_jdk_dist}"
+            register_jdk "$id" "$java_home"
+          done
+        echo "::endgroup::"
+
+        echo "::group::Installing required JDKs"
+          while IFS= read -r raw; do
+            # split comma-separated lines if the user mixed formats
+            IFS=',' read -ra parts <<<"$raw"
+            for jdk_spec in "${parts[@]}"; do
+              jdk_spec="${jdk_spec//[[:space:]]/}"  # trim all whitespace
+              [[ -z $jdk_spec ]] && continue
+
+              # parse <dist>@<version> or <version>
+              if [[ $jdk_spec == *@* ]]; then
+                jdk_dist="${jdk_spec%@*}"
+                jdk_ver="${jdk_spec#*@}"
+              else
+                jdk_dist="temurin"
+                jdk_ver="$jdk_spec"
+              fi
+              jdk_spec="$jdk_dist@$jdk_major"
+              jdk_major="${jdk_ver%%.*}"
+              if ! jdk_home=$(get_jdk_home "$jdk_major" "$jdk_dist"); then
+                ensure_sdkman_installed
+                id="${jdk_major}-$(map_vendor "$jdk_dist")"  
+                echo "➤ Installing JDK [$jdk_spec] via SDKMAN!"
+                sdk install java "$id"
+                jdk_home="$(sdk home java "$id")"
+                register_jdk "$id" "$jdk_home"
+              else
+                echo "✓ Reusing pre-installed JDK [$jdk_spec] at $jdk_home"
+              fi
+  
+              jdk_dist_upper=$(printf '%s' "$jdk_dist" | tr '[:lower:]' '[:upper:]')  # ${jdk_dist^^} alternative that works on MacOS Bash 3.2
+              echo "JAVA${jdk_major}_HOME=$jdk_home" >>"$GITHUB_ENV"
+              echo "JAVA${jdk_major}_${jdk_dist_upper}_HOME=$jdk_home" >>"$GITHUB_ENV"
+            done
+          done <<<"$REQUIRED_JDKS"
+        echo "::endgroup::"
+
+        echo "::group::GITHUB_ENV"
+        sort -u "$GITHUB_ENV"
+        echo "::endgroup::"
