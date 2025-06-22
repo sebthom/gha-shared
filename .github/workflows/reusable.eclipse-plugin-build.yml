@@ -311,9 +311,7 @@ jobs:
       id: HAS_CODECOV_TOKEN
       run: |
         if [ -n "${{ secrets.CODECOV_TOKEN }}" ]; then
-          echo "present=1"  >> "$GITHUB_OUTPUT"
-        else
-          echo "present=" >> "$GITHUB_OUTPUT"
+          echo "present=1" >>"$GITHUB_OUTPUT"
         fi
 
 
