@@ -97,8 +97,11 @@ on:
         type: string
       debug-with-ssh-only-for-actor:
         description: "Restrict SSH debug session access to the GitHub user who triggered the workflow"
-        default: true
-        type: boolean
+        # NOTE: using 'string' here is a WORKAROUND so the job doesn’t hang when the caller omits the value (push events pass 'undefined').
+        type: string
+        default: "true"
+        #default: true
+        #type: boolean
       debug-with-ssh-only-jobs-matching:
         description: "Only start an SSH session for jobs matching this regex pattern:"
         default: ".*"

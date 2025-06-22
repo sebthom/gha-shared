@@ -80,7 +80,8 @@ jobs:
         fi
 
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
-      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
+      debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
     secrets:
       SONATYPE_CENTRAL_USER:  ${{ secrets.SONATYPE_CENTRAL_USER }}
@@ -181,8 +182,8 @@ jobs:
       release-updatesite-branch: updatesite
       release-archive-name: org.haxe4e.plugin.updatesite.zip
 
-      debug-with-ssh: ${{ inputs.debug-with-ssh || 'never' }}
-      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+      debug-with-ssh: ${{ inputs.debug-with-ssh }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
     permissions:
@@ -236,8 +237,8 @@ jobs:
       release-branch: release
       release-updatesite-branch: updatesite
 
-      debug-with-ssh: ${{ inputs.debug-with-ssh || 'never' }}
-      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor || true }}
+      debug-with-ssh: ${{ inputs.debug-with-ssh }}
+      debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
     permissions:
       actions: write       # to delete action cache entries
