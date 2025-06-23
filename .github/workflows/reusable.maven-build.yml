@@ -353,6 +353,10 @@ jobs:
       contents: write # to create releases (commit to dev branch, create tags)
 
 
+    env:
+      EXTRA_MAVEN_ARGS: ${{ inputs.extra-maven-args }}  # added as env var so the before-build step can modify it if needed 
+
+
     steps:
     - name: "Show: GitHub context"
       env:
@@ -568,7 +572,7 @@ jobs:
         set -x
         bash ./.git/tmp/gha-shared/resources/maven/build.sh \
           "${maven_args[@]}" \
-          ${{ inputs.extra-maven-args }}
+          $EXTRA_MAVEN_ARGS
 
 
     - name: "After Build: Custom Bash script"
