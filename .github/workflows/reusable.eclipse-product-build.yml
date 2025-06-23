@@ -524,7 +524,6 @@ jobs:
 
         MAVEN_VERSION:            ${{ matrix.MAVEN_VERSION }}
         MAVEN_SETTINGS_FILE:      ${{ inputs.maven-settings-file || './.git/tmp/gha-shared/resources/maven/settings.xml' }}
-        MAVEN_TOOLCHAINS_FILE:    ${{ './.git/tmp/gha-shared/resources/maven/toolchains.xml' }}
         RESTORED_MAVEN_REPO_PATH: ${{ steps.MOVE_RESTORED_MAVEN_REPO.outputs.REPO_PATH }}
 
         COMPILE_JDK_VENDOR:  ${{ matrix.COMPILE_JDK_VENDOR }}
