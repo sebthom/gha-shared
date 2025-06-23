@@ -475,7 +475,6 @@ jobs:
       uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found 
-        # Excluded sub directory not working https://github.com/actions/toolkit/issues/713
         path: |
           ~/.m2/bin
           ~/.m2/repository/*
@@ -595,8 +594,9 @@ jobs:
 
     - name: "Cache: Save (Local Maven Repository)"
       uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
-      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() }} # save the cache even when the build failed
+      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() }}  # save the cache even when the build failed
       with:
+        # Excluded sub directory not working https://github.com/actions/toolkit/issues/713
         path: |
           ~/.m2/bin
           ~/.m2/repository/*
