@@ -68,6 +68,7 @@ on:
         description: >
           A comma- or newline-separated list of Maven runtimes to use, for example `latest,3.6.1,mvnw`.
           Use `mvnw` to invoke the project's own `./mvnw` wrapper script; otherwise specify a version number or `latest`.
+          If no version is given, falls back to any Maven already installed; if none is found, the latest release is downloaded and installed.
           Append an exclamation mark '!' suffix to allow failures for that Maven version (e.g., `latest!`).
         required: false
         type: string
@@ -79,6 +80,19 @@ on:
         description: "Path to a custom Maven settings.xml file to use during the build"
         required: false
         type: string
+      set-jdk-version-properties:
+        description: >
+          Determines whether Maven system properties reporting the JDK versions and vendors used during compilation and testing are automatically set.
+          If enabled (`true`), the build includes these properties:
+            -Djava.version=<compile-jdk-major-version>  
+            -Djava.vendor=<compile-jdk-vendor>  
+            -Djava.version.unit-tests=<test-jdk-major-version>  
+            -Djava.vendor.unit-tests=<test-jdk-vendor>
+        # NOTE: using 'string' here is a WORKAROUND so the job doesn’t hang when the caller omits the value (push events pass 'undefined').
+        type: string
+        default: "true"
+        #default: true
+        #type: boolean
 
       before-build: 
         description: "Bash commands executed before the Maven build"
@@ -546,6 +560,14 @@ jobs:
 
         source ./.git/tmp/gha-shared/resources/maven/configure-maven.sh
 
+        maven_args=()
+        if [[ "${{ inputs.set-jdk-version-properties }}" == "true" ]]; then
+          maven_args+=( "-Djava.vendor=${COMPILE_JDK_VENDOR}" )
+          maven_args+=( "-Djava.version=${COMPILE_JDK_VERSION}" )
+          maven_args+=( "-Djava.vendor.unit-tests=${TEST_JDK_VENDOR}" )
+          maven_args+=( "-Djava.version.unit-tests=${TEST_JDK_VERSION}" )
+        fi
+
         $maven \
           -Declipse.p2.mirrors=false \
           "-Dtycho.target-platform=$(basename "$TARGET_FILE" .target)" \
@@ -553,11 +575,8 @@ jobs:
           "-Dtycho.product=$(basename "$PRODUCT_FILE" .product)" \
           "-Dtycho.product.file=$PRODUCT_FILE" \
           "-Dtycho.product.uid=$PRODUCT_UID" \
-          "-Djava.vendor=$COMPILE_JDK_VENDOR" \
-          "-Djava.version=$COMPILE_JDK_VERSION" \
-          "-Djava.vendor.unit-tests=$TEST_JDK_VENDOR" \
-          "-Djava.version.unit-tests=$TEST_JDK_VERSION" \
-           ${{ inputs.extra-maven-args }} \
+          "${maven_args[@]}" \
+          ${{ inputs.extra-maven-args }} \
           help:active-profiles clean verify || (
             rc=$?
             if [[ ${ACT:-} != "true" ]]; then
