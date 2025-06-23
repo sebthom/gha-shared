@@ -170,16 +170,16 @@ jobs:
       id: PARSE_INPUTS
       env:
         PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
-        RUNS_ON:        ${{ inputs.runs-on }}
-        MAVEN_JDK:      ${{ inputs.maven-jdk }}
-        MAVEN_VERSIONS: ${{ inputs.maven-versions }}
-        TARGET_FILES:   ${{ inputs.target-files }}
-        ON_DEV_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
-        ON_REL_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.release-branch)     && 'true' || 'false' }}
+        RUNS_ON:          ${{ inputs.runs-on }}
+        MAVEN_JDK:        ${{ inputs.maven-jdk }}
+        MAVEN_VERSIONS:   ${{ inputs.maven-versions }}
+        TARGET_FILES:     ${{ inputs.target-files }}
+        ON_DEV_BRANCH:    ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
+        ON_REL_BRANCH:    ${{ github.ref == format('refs/heads/{0}', inputs.release-branch)     && 'true' || 'false' }}
         DEV_UPDATE_SITE_BRANCH: ${{ inputs.development-updatesite-branch }}
         REL_UPDATE_SITE_BRANCH: ${{ inputs.release-updatesite-branch }}
         DISABLE_RELEASES: ${{ (env.ACT && !env.GITEA_ACTIONS) && 'true' || 'false' }}  # no releases when running via nektos/act locally
-        CODECOV_TOKEN:  ${{ secrets.CODECOV_TOKEN }}
+        CODECOV_TOKEN:    ${{ secrets.CODECOV_TOKEN }}
       shell: python {0}
       run: |
         import collections, json, os, re, uuid, sys, xml.etree.ElementTree as ET
@@ -262,11 +262,14 @@ jobs:
                     if not os.path.isfile(target_file):
                        print(f"❌ Specified target file '{target_file}' does not exist.", file=sys.stderr)
                        sys.exit(1)
-                    is_release_job = len(matrix) == 0  # first matrix job is used to create releases
+                    is_release_job = (
+                        len(matrix) == 0  # first matrix job is used to create releases
+                        and ENV["DISABLE_RELEASES"] != "true"
+                    )
                     release_name = ""
                     release_updatesite_branch = ""
                     concurrency_group = uuid.uuid4().hex
-                    if is_release_job and ENV['DISABLE_RELEASES'] != 'true':
+                    if is_release_job:
                         if on_dev_branch:
                             release_name = "preview"
                             concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-preview"

@@ -174,13 +174,14 @@ jobs:
       id: PARSE_INPUTS
       env:
         PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
-        RUNS_ON:        ${{ inputs.runs-on }}
-        COMPILE_JDK:    ${{ inputs.compile-jdk }}
-        TEST_JDKS:      ${{ inputs.test-jdks }}
-        MAVEN_JDK:      ${{ inputs.maven-jdk }}
-        MAVEN_VERSIONS: ${{ inputs.maven-versions }}
-        ON_DEV_BRANCH:  ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
-        CODECOV_TOKEN:  ${{ secrets.CODECOV_TOKEN }}
+        RUNS_ON:          ${{ inputs.runs-on }}
+        COMPILE_JDK:      ${{ inputs.compile-jdk }}
+        TEST_JDKS:        ${{ inputs.test-jdks }}
+        MAVEN_JDK:        ${{ inputs.maven-jdk }}
+        MAVEN_VERSIONS:   ${{ inputs.maven-versions }}
+        ON_DEV_BRANCH:    ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
+        DISABLE_RELEASES: ${{ (env.ACT && !env.GITEA_ACTIONS) && 'true' || 'false' }}  # no releases when running via nektos/act locally
+        CODECOV_TOKEN:    ${{ secrets.CODECOV_TOKEN }}
       shell: python {0}
       run: |
         import collections, json, os, re, uuid
@@ -236,10 +237,13 @@ jobs:
         # compile JDK
         for runner_idx, (runner_label, runner_allow_failure) in enumerate(runners):
             for mvn_idx, (mvn_version, mvn_allow_failure) in enumerate(mvn_versions):
-                can_create_release = on_dev_branch if runner_idx == 0 and mvn_idx == 0 else False
-
+                can_create_release = (
+                    on_dev_branch if runner_idx == 0
+                    and mvn_idx == 0 else False 
+                    and ENV['DISABLE_RELEASES'] != 'true'
+                )
                 if can_create_release:
-                    concurrency_group = f"{ENV["GITHUB_WORKFLOW"]}-release"
+                    concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-release"
                 else:
                     concurrency_group = uuid.uuid4().hex
 

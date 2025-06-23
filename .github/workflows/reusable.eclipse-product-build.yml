@@ -161,12 +161,12 @@ jobs:
       id: PARSE_INPUTS
       env:
         PYTHONUTF8: 1  # workaround for "UnicodeEncodeError: 'charmap' codec can't encode character" on Windows
-        MAVEN_JDK:      ${{ inputs.maven-jdk }}
-        MAVEN_VERSIONS: ${{ inputs.maven-versions }}
-        PRODUCT_FILES:   ${{ inputs.product-files }}
-        TARGET_FILES:   ${{ inputs.target-files }}
-        ON_DEV_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
-        ON_REL_BRANCH:  ${{ github.ref == format('refs/heads/{0}', inputs.release-branch)     && 'true' || 'false' }}
+        MAVEN_JDK:        ${{ inputs.maven-jdk }}
+        MAVEN_VERSIONS:   ${{ inputs.maven-versions }}
+        PRODUCT_FILES:    ${{ inputs.product-files }}
+        TARGET_FILES:     ${{ inputs.target-files }}
+        ON_DEV_BRANCH:    ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
+        ON_REL_BRANCH:    ${{ github.ref == format('refs/heads/{0}', inputs.release-branch)     && 'true' || 'false' }}
         DEV_UPDATE_SITE_BRANCH: ${{ inputs.development-updatesite-branch }}
         REL_UPDATE_SITE_BRANCH: ${{ inputs.release-updatesite-branch }}
         DISABLE_RELEASES: ${{ (env.ACT && !env.GITEA_ACTIONS) && 'true' || 'false' }}  # no releases when running via nektos/act locally
@@ -259,7 +259,10 @@ jobs:
                     if not os.path.isfile(target_file):
                        print(f"❌ Specified target file '{target_file}' does not exist.", file=sys.stderr)
                        sys.exit(1)
-                    is_release_job = len(matrix) == 0  # first matrix job is used to create releases
+                    is_release_job = (
+                        len(matrix) == 0  # first matrix job is used to create releases
+                        and ENV["DISABLE_RELEASES"] != "true"
+                    )
                     release_name = ""
                     release_updatesite_branch = ""
                     concurrency_group = uuid.uuid4().hex
