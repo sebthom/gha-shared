@@ -17,6 +17,7 @@ set -o pipefail # causes a pipeline to return the exit status of the last comman
 set -o nounset # treat undefined variables as errors
 
 # configure stack trace reporting
+# shellcheck disable=SC2154 # rc is referenced but not assigned
 trap 'rc=$?; echo >&2 "$(date +%H:%M:%S) Error - exited with status $rc in [$BASH_SOURCE] at line $LINENO:"; cat -n $BASH_SOURCE | tail -n+$((LINENO - 3)) | head -n7' ERR
 
 THIS_FILE_DIR=$(cd "$(dirname "$0")"; pwd -P)
@@ -53,15 +54,16 @@ fi
 
 
 echo
+# shellcheck disable=SC1091  # (info): Not following: ./configure-maven.sh: openBinaryFile: does not exist (No such file or directory)
 source "$THIS_FILE_DIR/configure-maven.sh"
 
 
 #
 # decide whether to perform a release build or build+deploy a snapshot version
 #
-if [[ ${maven_project_version:-foo} == ${POM_CURRENT_VERSION:-bar} && ${CAN_CREATE_RELEASE:-} == "true" ]]; then
+if [[ ${maven_project_version:-foo} == "${POM_CURRENT_VERSION:-bar}" && ${CAN_CREATE_RELEASE:-} == "true" ]]; then
   # https://stackoverflow.com/questions/8653126/how-to-increment-version-number-in-a-shell-script/21493080#21493080
-  nextDevelopmentVersion="$(echo ${POM_RELEASE_VERSION} | perl -pe 's/^((\d+\.)*)(\d+)(.*)$/$1.($3+1).$4/e')-SNAPSHOT"
+  nextDevelopmentVersion="$(echo "${POM_RELEASE_VERSION}" | perl -pe 's/^((\d+\.)*)(\d+)(.*)$/$1.($3+1).$4/e')-SNAPSHOT"
 
   SKIP_TESTS=${SKIP_TESTS:-false}
 
@@ -76,22 +78,22 @@ if [[ ${maven_project_version:-foo} == ${POM_CURRENT_VERSION:-bar} && ${CAN_CREA
 
   # workaround for "No toolchain found with specification [version:11, vendor:default]" during release builds
   if [[ -f ${MAVEN_SETTINGS_FILE:-} ]]; then
-    cp -f "${MAVEN_SETTINGS_FILE:-}" $HOME/.m2/settings.xml
+    cp -f "${MAVEN_SETTINGS_FILE:-}" "$HOME/.m2/settings.xml"
   fi
   if [[ -f ${MAVEN_TOOLCHAINS_FILE:-} ]]; then
-    cp -f "${MAVEN_TOOLCHAINS_FILE:-}" $HOME/.m2/toolchains.xml
+    cp -f "${MAVEN_TOOLCHAINS_FILE:-}" "$HOME/.m2/toolchains.xml"
   fi
 
   export DEPLOY_RELEASES_TO_MAVEN_CENTRAL=true
 
-  $maven "$@" \
-      -DskipTests=${SKIP_TESTS} \
-      -DskipITs=${SKIP_TESTS} \
-      -DdryRun=${DRY_RUN} \
+  ${maven:-mvn} "$@" \
+      "-DskipTests=${SKIP_TESTS}" \
+      "-DskipITs=${SKIP_TESTS}" \
+      "-DdryRun=${DRY_RUN}" \
       -Dresume=false \
       "-Darguments=-DskipTests=${SKIP_TESTS} -DskipITs=${SKIP_TESTS}" \
-      -DreleaseVersion=${POM_RELEASE_VERSION} \
-      -DdevelopmentVersion=${nextDevelopmentVersion} \
+      "-DreleaseVersion=${POM_RELEASE_VERSION}" \
+      "-DdevelopmentVersion=${nextDevelopmentVersion}" \
       help:active-profiles clean release:clean release:prepare release:perform \
       | grep -v -e "\[INFO\] Download.* from repository-restored-from-cache" `# suppress download messages from repo restored from cache ` \
       | grep -v -e "\[INFO\]  .* \[0.0[0-9][0-9]s\]" # the grep command suppresses all lines from maven-buildtime-extension that report plugins with execution time <=99ms
@@ -121,13 +123,13 @@ if [[ ${CAN_CREATE_RELEASE:-} == "true" ]]; then
         github_repo_url="https://${GITHUB_USER}:${GITHUB_API_KEY}@github.com/${GITHUB_REPOSITORY}"
         if curl --output /dev/null --silent --head --fail "$github_repo_url/tree/$branch"; then
           git clone "$github_repo_url" --single-branch --branch "$branch" "$branch"
-          pushd $branch >/dev/null
+          pushd "$branch" >/dev/null
           if [[ "${revert_last_commit:-}" == "true" ]]; then
             git reset --hard HEAD^ # revert previous commit
           fi
         else
           git clone "$github_repo_url" "$branch"
-          pushd $branch >/dev/null
+          pushd "$branch" >/dev/null
           git checkout --orphan "$branch"
           git rm -rf .
           touch .gitkeep
@@ -145,7 +147,7 @@ if [[ ${CAN_CREATE_RELEASE:-} == "true" ]]; then
       echo "###################################################"
       echo "# Preparing $SNAPSHOTS_BRANCH branch...       #"
       echo "###################################################"
-      initializeSiteBranch --branch $SNAPSHOTS_BRANCH
+      initializeSiteBranch --branch "$SNAPSHOTS_BRANCH"
       maven_goal+=" -DaltSnapshotDeploymentRepository=temp-snapshots-repo::file:///tmp/$SNAPSHOTS_BRANCH/"
     fi
 
@@ -154,7 +156,7 @@ if [[ ${CAN_CREATE_RELEASE:-} == "true" ]]; then
       echo "###################################################"
       echo "# Preparing $JAVADOC_BRANCH branch...            #"
       echo "###################################################"
-      initializeSiteBranch --branch $JAVADOC_BRANCH --revert-last-commit
+      initializeSiteBranch --branch "$JAVADOC_BRANCH" --revert-last-commit
       rm -rf target/*-javadoc.jar target/reports/apidocs
       maven_goal+=" -Dskip.maven.javadoc=false"
     fi
@@ -168,7 +170,8 @@ echo
 echo "###################################################"
 echo "# Building Maven Project...                       #"
 echo "###################################################"
-$maven "$@" \
+# shellcheck disable=SC2086  # (info): Double quote to prevent globbing and word splitting.
+${maven:-mvn} "$@" \
     help:active-profiles clean $maven_goal \
     | grep -v -e "\[INFO\] Download.* from repository-restored-from-cache" `# suppress download messages from repo restored from cache ` \
     | grep -v -e "\[INFO\]  .* \[0.0[0-9][0-9]s\]" # the grep command suppresses all lines from maven-buildtime-extension that report plugins with execution time <=99ms
@@ -179,7 +182,7 @@ if [[ ${CAN_CREATE_RELEASE:-} == "true" && ${GITHUB_ACTIONS:-} == "true" ]]; the
     echo "###################################################"
     echo "# Update Maven Snapshots Repo...                  #"
     echo "###################################################"
-    pushd /tmp/$SNAPSHOTS_BRANCH >/dev/null
+    pushd "/tmp/$SNAPSHOTS_BRANCH" >/dev/null
       cat <<EOF > index.html
 <!DOCTYPE html>
 <html lang="en">
@@ -194,7 +197,7 @@ EOF
       if [[ $(git -C . ls-files -o -m -d --exclude-standard | wc -l) -gt 0 ]]; then
         git add --all
         git commit -am "$maven_project_version: $last_commit_message"
-        git push origin $SNAPSHOTS_BRANCH --force
+        git push origin "$SNAPSHOTS_BRANCH" --force
       fi
     popd >/dev/null
   fi
@@ -204,14 +207,14 @@ EOF
     echo "###################################################"
     echo "# Deploying Javadoc...                            #"
     echo "###################################################"
-    rm -rf /tmp/$JAVADOC_BRANCH/javadoc
+    rm -rf "/tmp/$JAVADOC_BRANCH/javadoc"
     if [[ -f target/reports/apidocs/index.html ]]; then
-      mv target/reports/apidocs /tmp/$JAVADOC_BRANCH/javadoc
+      mv target/reports/apidocs "/tmp/$JAVADOC_BRANCH/javadoc"
     else
-      mkdir /tmp/$JAVADOC_BRANCH/javadoc
-      unzip "target/*-javadoc.jar" -d /tmp/$JAVADOC_BRANCH/javadoc
+      mkdir "/tmp/$JAVADOC_BRANCH/javadoc"
+      unzip "target/*-javadoc.jar" -d "/tmp/$JAVADOC_BRANCH/javadoc"
     fi
-    pushd /tmp/$JAVADOC_BRANCH >/dev/null
+    pushd "/tmp/$JAVADOC_BRANCH" >/dev/null
       cat <<EOF > index.html
 <!DOCTYPE html>
 <html lang="en">
@@ -227,7 +230,7 @@ EOF
       if [[ $(git -C . ls-files -o -m -d --exclude-standard | wc -l) -gt 0 ]]; then
         git add --all
         git commit -am "$maven_project_version: $last_commit_message"
-        git push origin $JAVADOC_BRANCH --force
+        git push origin "$JAVADOC_BRANCH" --force
       fi
     popd >/dev/null
   fi

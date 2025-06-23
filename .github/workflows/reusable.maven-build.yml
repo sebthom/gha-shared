@@ -47,6 +47,7 @@ on:
         description: >
           A comma- or newline-separated list of Maven runtimes to use, for example `latest,3.6.1,mvnw`.
           Use `mvnw` to invoke the project's own `./mvnw` wrapper script; otherwise specify a version number or `latest`.
+          If no version is given, falls back to any Maven already installed; if none is found, the latest release is downloaded and installed.
           Append an exclamation mark '!' suffix to allow failures for that Maven version (e.g., `latest!`).
         required: false
         type: string
@@ -163,7 +164,12 @@ jobs:
       uses: luizm/action-sh-checker@master  # https://github.com/marketplace/actions/sh-checker
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SHFMT_OPTS: --simplify --keep-padding
+        SHFMT_OPTS: >
+          --simplify
+          --keep-padding
+        SHELLCHECK_OPTS: -x -e SC1090
+          # -x -> external-sources=true https://github.com/koalaman/shellcheck/wiki/directive#external-sources
+          # -e SC1090 > (info): SC1090 (warning): ShellCheck can't follow non-constant source.
       with:
          sh_checker_comment: true
          sh_checker_checkbashisms_enable: true
@@ -227,7 +233,7 @@ jobs:
         test_jdks    = [parse_jdk  (j) for j in split_items(ENV["TEST_JDKS"])]
         mvn_versions = [parse_maven(m) for m in split_items(ENV["MAVEN_VERSIONS"])]
         if not mvn_versions:
-            mvn_versions = [("mvn" if os.path.isfile("./mvnw") else "latest", False)]
+            mvn_versions = [("mvnw" if os.path.isfile("./mvnw") else "any", False)]
 
         on_dev_branch = ENV["ON_DEV_BRANCH"] == "true"
         codecov_token = ENV["CODECOV_TOKEN"]
@@ -369,6 +375,14 @@ jobs:
         DEST: ./.git/tmp/gha-shared
       run: |
         set -euo pipefail
+
+        if [[ $GITHUB_REPOSITORY == "sebthom/gha-shared" ]]; then  # for fast local tests via nektos/act
+            rm -rf ./.git/tmp/gha-shared
+            mkdir -p ./.git/tmp/gha-shared
+            cp -r ./.github ./.git/tmp/gha-shared/
+            cp -r ./resources ./.git/tmp/gha-shared/
+            exit
+        fi
 
         URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${WORKFLOW_REPO}.git"
         REF="$WORKFLOW_VERSION"

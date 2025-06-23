@@ -47,6 +47,14 @@ else
       echo "No Maven installation detected on PATH"
     fi
 
+    if [[ ${MAVEN_VERSION} == "any" ]]; then
+      if [[ -z ${current_maven_version:-} ]]; then
+        MAVEN_VERSION=latest
+      else
+        MAVEN_VERSION=${current_maven_version}
+      fi
+    fi
+
     if [[ ${MAVEN_VERSION} == "latest" ]]; then
       echo "Determining latest Maven version..."
       latest_maven_version=$(
@@ -65,7 +73,7 @@ else
       fi
     else   # a specific version was requested
       if [[ ${current_maven_version:-} != "$MAVEN_VERSION" ]]; then
-        install_maven_version="$current_maven_version"
+        install_maven_version="$MAVEN_VERSION"
       else
         echo "Requested Maven $MAVEN_VERSION is already installed; nothing to do."
       fi
@@ -138,6 +146,6 @@ EOF
 )
   echo "  -> Current Version: $maven_project_version"
   if [[ ${GITHUB_ACTIONS:-} == "true" ]]; then
-    echo "MAVEN_PROJECT_VERSION=$maven_project_version" >> $GITHUB_ENV
+    echo "MAVEN_PROJECT_VERSION=$maven_project_version" >>"$GITHUB_ENV"
   fi
 fi

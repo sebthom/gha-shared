@@ -72,6 +72,7 @@ on:
         description: >
           A comma- or newline-separated list of Maven runtimes to use, for example `latest,3.6.1,mvnw`.
           Use `mvnw` to invoke the project's own `./mvnw` wrapper script; otherwise specify a version number or `latest`.
+          If no version is given, falls back to any Maven already installed; if none is found, the latest release is downloaded and installed.
           Append an exclamation mark '!' suffix to allow failures for that Maven version (e.g., `latest!`).
         required: false
         type: string
@@ -159,7 +160,12 @@ jobs:
       uses: luizm/action-sh-checker@master  # https://github.com/marketplace/actions/sh-checker
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SHFMT_OPTS: --simplify --keep-padding
+        SHFMT_OPTS: >
+          --simplify
+          --keep-padding
+        SHELLCHECK_OPTS: -x -e SC1090
+          # -x -> external-sources=true https://github.com/koalaman/shellcheck/wiki/directive#external-sources
+          # -e SC1090 > (info): SC1090 (warning): ShellCheck can't follow non-constant source.
       with:
          sh_checker_comment: true
          sh_checker_checkbashisms_enable: true
@@ -248,7 +254,7 @@ jobs:
         target_files = [parse_target(t) for t in split_items(ENV["TARGET_FILES"])]
         mvn_versions = [parse_maven(m)  for m in split_items(ENV["MAVEN_VERSIONS"])]
         if not mvn_versions:
-            mvn_versions = [("mvn" if os.path.isfile("./mvnw") else "latest", False)]
+            mvn_versions = [("mvnw" if os.path.isfile("./mvnw") else "any", False)]
 
         on_dev_branch = ENV["ON_DEV_BRANCH"] == "true"
         on_rel_branch = ENV["ON_REL_BRANCH"] == "true"
@@ -292,8 +298,8 @@ jobs:
                       "MAVEN_JDK_VENDOR":       maven_jdk[0],
                       "RELEASE_NAME":           release_name,
                       "UPDATESITE_BRANCH":      release_updatesite_branch,
-                      "CAN_UPDATE_MAVEN_CACHE": mvn_idx == 0 and target_idx == 0, # only the first job per runner updates the Maven cache
-                      "CAN_UPDATE_TYCHO_CACHE": mvn_idx == 0, # only the first Maven-version per runner+target updates the Tycho cache
+                      "CAN_UPDATE_MAVEN_CACHE": mvn_idx == 0 and target_idx == 0,  # only the first job per runner updates the Maven cache
+                      "CAN_UPDATE_TYCHO_CACHE": mvn_idx == 0,  # only the first Maven-version per runner+target updates the Tycho cache
                       "CONCURRENCY_GROUP":      concurrency_group,
                       "ALLOW_FAILURE":          runner_allow_failure or mvn_allow_failure or target_allow_failure,
                       "UPLOAD_TO_CODECOV":      is_release_job and codecov_token != ""
@@ -385,6 +391,14 @@ jobs:
         DEST: ./.git/tmp/gha-shared
       run: |
         set -euo pipefail
+
+        if [[ $GITHUB_REPOSITORY == "sebthom/gha-shared" ]]; then  # for fast local tests via nektos/act
+            rm -rf ./.git/tmp/gha-shared
+            mkdir -p ./.git/tmp/gha-shared
+            cp -r ./.github ./.git/tmp/gha-shared/
+            cp -r ./resources ./.git/tmp/gha-shared/
+            exit
+        fi
 
         URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${WORKFLOW_REPO}.git"
         REF="$WORKFLOW_VERSION"

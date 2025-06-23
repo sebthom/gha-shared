@@ -150,7 +150,12 @@ jobs:
       uses: luizm/action-sh-checker@master  # https://github.com/marketplace/actions/sh-checker
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SHFMT_OPTS: --simplify --keep-padding
+        SHFMT_OPTS: >
+          --simplify
+          --keep-padding
+        SHELLCHECK_OPTS: -x -e SC1090
+          # -x -> external-sources=true https://github.com/koalaman/shellcheck/wiki/directive#external-sources
+          # -e SC1090 > (info): SC1090 (warning): ShellCheck can't follow non-constant source.
       with:
          sh_checker_comment: true
          sh_checker_checkbashisms_enable: true
@@ -245,7 +250,7 @@ jobs:
         target_files  = [parse_target(t)  for t in split_items(ENV["TARGET_FILES"])]
         mvn_versions  = [parse_maven(m)   for m in split_items(ENV["MAVEN_VERSIONS"])]
         if not mvn_versions:
-            mvn_versions = [("mvn" if os.path.isfile("./mvnw") else "latest", False)]
+            mvn_versions = [("mvnw" if os.path.isfile("./mvnw") else "any", False)]
 
         on_dev_branch = ENV["ON_DEV_BRANCH"] == "true"
         on_rel_branch = ENV["ON_REL_BRANCH"] == "true"
@@ -266,7 +271,7 @@ jobs:
                     release_name = ""
                     release_updatesite_branch = ""
                     concurrency_group = uuid.uuid4().hex
-                    if is_release_job and ENV['DISABLE_RELEASES'] != 'true':
+                    if is_release_job:
                         if on_dev_branch:
                             release_name = "preview"
                             concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-preview"
@@ -316,6 +321,7 @@ jobs:
   ###########################################################
   build:
   ###########################################################
+    # need to run on Windows to build portableapps.com installer
     runs-on: windows-latest  # https://github.com/actions/runner-images#available-images
     continue-on-error: ${{ matrix.ALLOW_FAILURE }}
     needs: [ init ]
@@ -374,6 +380,14 @@ jobs:
         DEST: ./.git/tmp/gha-shared
       run: |
         set -euo pipefail
+
+        if [[ $GITHUB_REPOSITORY == "sebthom/gha-shared" ]]; then  # for fast local tests via nektos/act
+            rm -rf ./.git/tmp/gha-shared
+            mkdir -p ./.git/tmp/gha-shared
+            cp -r ./.github ./.git/tmp/gha-shared/
+            cp -r ./resources ./.git/tmp/gha-shared/
+            exit
+        fi
 
         URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${WORKFLOW_REPO}.git"
         REF="$WORKFLOW_VERSION"

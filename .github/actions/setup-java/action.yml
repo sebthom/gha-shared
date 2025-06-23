@@ -202,8 +202,8 @@ runs:
               java_home = execute("bash", "-c", f"source $HOME/.sdkman/bin/sdkman-init.sh && sdk home java {jid}").stdout.strip()
               register_jdk(jid, java_home)
           else:
-              print(f"::group::✓ Reusing pre-installed {spec} at {java_home}")
               java_home = registered_jdks[jid]
+              print(f"::group::✓ Reusing pre-installed {spec} at {java_home}")
 
           append(GITHUB_ENV, f"JAVA{major}_HOME={java_home}")
           append(GITHUB_ENV, f"JAVA{major}_{dist.upper()}_HOME={java_home}")
