@@ -604,24 +604,24 @@ jobs:
         # generate linux x86_64 archive
         (
           cd $PRODUCT_UID/linux/gtk/x86_64; 
-          tar -cf ../../../../${PRODUCT_UID}-linux.gtk.x86_64.tar --exclude='HaxeStudio' --exclude='plugins/org.eclipse.justj.*/jre/bin' *;
-          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-linux.gtk.x86_64.tar HaxeStudio plugins/org.eclipse.justj.*/jre/bin/*
+          tar -cf ../../../../${PRODUCT_UID}-linux.gtk.x86_64.tar --exclude="${LAUNCHER_NAME}" --exclude='plugins/org.eclipse.justj.*/jre/bin' *;
+          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-linux.gtk.x86_64.tar "${LAUNCHER_NAME}" plugins/org.eclipse.justj.*/jre/bin/*
         )
         gzip -9 ${PRODUCT_UID}-linux.gtk.x86_64.tar
 
         # generate macos aarch64 archive
         (
           cd $PRODUCT_UID/macosx/cocoa/aarch64; 
-          tar -cf ../../../../${PRODUCT_UID}-macosx.cocoa.aarch64.tar --exclude='Eclipse.app/Contents/MacOS/HaxeStudio' --exclude='Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin' *;
-          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-macosx.cocoa.aarch64.tar Eclipse.app/Contents/MacOS/HaxeStudio Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin/*
+          tar -cf ../../../../${PRODUCT_UID}-macosx.cocoa.aarch64.tar --exclude="Eclipse.app/Contents/MacOS/${LAUNCHER_NAME}" --exclude='Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin' *;
+          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-macosx.cocoa.aarch64.tar "Eclipse.app/Contents/MacOS/${LAUNCHER_NAME}" Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin/*
         )
         gzip -9 ${PRODUCT_UID}-macosx.cocoa.aarch64.tar
 
         # generate macos x86_64 archive
         (
           cd $PRODUCT_UID/macosx/cocoa/x86_64; 
-          tar -cf ../../../../${PRODUCT_UID}-macosx.cocoa.x86_64.tar --exclude='Eclipse.app/Contents/MacOS/HaxeStudio' --exclude='Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin' *;
-          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-macosx.cocoa.x86_64.tar Eclipse.app/Contents/MacOS/HaxeStudio Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin/*
+          tar -cf ../../../../${PRODUCT_UID}-macosx.cocoa.x86_64.tar --exclude="Eclipse.app/Contents/MacOS/${LAUNCHER_NAME}" --exclude='Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin' *;
+          tar --mode='+x' --append -f ../../../../${PRODUCT_UID}-macosx.cocoa.x86_64.tar "Eclipse.app/Contents/MacOS/${LAUNCHER_NAME}" Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.*/jre/bin/*
         )
         gzip -9 ${PRODUCT_UID}-macosx.cocoa.x86_64.tar
 
