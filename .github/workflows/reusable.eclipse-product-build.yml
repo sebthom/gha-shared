@@ -514,7 +514,7 @@ jobs:
       id: MOVE_RESTORED_MAVEN_REPO
       run: |
         set -euxo pipefail
-        
+
         RESTORED_MAVEN_REPO_PATH=$HOME/.m2/repository-restored
 
         (set -x; ls -lart ~/.m2)
@@ -550,10 +550,11 @@ jobs:
         TEST_JDK_VERSION:    ${{ matrix.TEST_JDK_VERSION }}
         TEST_JDK_HOME:       ${{ steps.JDKS.outputs.TEST_JDK_HOME }}
 
-        # release toggles & credentials - will be unset for PR runs
         PRODUCT_FILE:         ${{ matrix.PRODUCT_FILE }}   # e.g. dart-studio.product
         PRODUCT_UID:          ${{ matrix.PRODUCT_UID }}    # e.g. org.dart4e.studio -> defined in .product
         LAUNCHER_NAME:        ${{ matrix.LAUNCHER_NAME }}  # e.g. Dart4EStudio -> defined in .product
+
+        # release toggles & credentials - will be unset for PR runs
         RELEASE_NAME:         ${{ matrix.RELEASE_NAME }}
         RELEASE_ARCHIVE_GLOB: ${{ inputs.release-archive-glob }}
 

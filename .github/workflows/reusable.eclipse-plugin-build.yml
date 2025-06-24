@@ -125,11 +125,32 @@ on:
         default: ".*"
         type: string
 
+      jarsigner-alias:
+        description: >
+          Specifies the certificate alias used for JAR signing with the `maven-jarsigner-plugin`.
+          This alias corresponds to the name of a subdirectory under `/etc/letsencrypt/live/` containing the `privkey.pem` and `fullchain.pem` files.
+          These files are extracted from the provided `JARSIGNER_KEYSTORE` archive to generate a PKCS#12 keystore (`.p12` file).
+          For example, if the certificate is located in `/etc/letsencrypt/live/example.com/`, the input must be set to `example.com`.
+        required: false
+        type: string
+
       # workaround for https://github.com/actions/toolkit/issues/1264
       gha-shared-repo:    { default: "sebthom/gha-shared", type: string, description: "Repository containing this workflow" }
       gha-shared-version: { default: "v1",                 type: string, description: "Version of this workflow: branch, tag or commit" }
 
     secrets:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callsecrets
+      JARSIGNER_KEYSTORE:
+        description: >
+          Provides the key material used by the `maven-jarsigner-plugin` to sign generated JAR artifacts.
+          Currently, the only supported input format is a base64-encoded gzipped tarball (.tar.gz) of the entire `/etc/letsencrypt` directory tree (including `live/`, `archive/`, `renewal/`, etc.).
+          The workflow extracts this archive, retrieves the `privkey.pem` and `fullchain.pem` files for the specified alias, and assembles them into a PKCS#12 keystore (`.p12` file).
+          It then sets the following Maven properties for use by the plugin:
+            - `-Djarsigner.keystore=<path/to/keystore.p12>`
+            - `-Djarsigner.keypass=<keystore-password>`
+            - `-Djarsigner.storepass=<keystore-password>`
+            - `-Djarsigner.alias=<jarsigner-alias>`
+        required: false
+
       CODECOV_TOKEN:
         description: "Codecov upload token for publishing test coverage reports"
         required: false
@@ -330,17 +351,21 @@ jobs:
             out.write(f"MATRIX={json_out}\n")
 
 
-    - name: Detect if CODECOV_TOKEN secret is present
-      id: HAS_CODECOV_TOKEN
+    - name: Detect if secrets are present
+      id: HAS_SECRETS
       run: |
         if [ -n "${{ secrets.CODECOV_TOKEN }}" ]; then
-          echo "present=1" >>"$GITHUB_OUTPUT"
+          echo "CODECOV_TOKEN=1" >>"$GITHUB_OUTPUT"
+        fi
+        if [ -n "${{ secrets.JARSIGNER_KEYSTORE }}" ]; then
+          echo "JARSIGNER_KEYSTORE=1" >>"$GITHUB_OUTPUT"
         fi
 
 
     outputs:
-      MATRIX:            ${{ steps.PARSE_INPUTS.outputs.MATRIX }}
-      HAS_CODECOV_TOKEN: ${{ steps.HAS_CODECOV_TOKEN.outputs.present }}
+      MATRIX:                 ${{ steps.PARSE_INPUTS.outputs.MATRIX }}
+      HAS_CODECOV_TOKEN:      ${{ steps.HAS_SECRETS.outputs.CODECOV_TOKEN }}
+      HAS_JARSIGNER_KEYSTORE: ${{ steps.HAS_SECRETS.outputs.JARSIGNER_KEYSTORE }}
 
 
   ###########################################################
@@ -496,6 +521,8 @@ jobs:
     - name: Configure JDKs ☕
       id: JDKS
       run: |
+        set -euo pipefail
+
         function get_java_home() {
           local java_home_varname="JAVA${1}_${2}_HOME"
           java_home_varname="$(printf '%s' "$java_home_varname" | tr '[:lower:]' '[:upper:]')"
@@ -565,7 +592,7 @@ jobs:
       id: MOVE_RESTORED_MAVEN_REPO
       run: |
         set -euxo pipefail
-        
+
         RESTORED_MAVEN_REPO_PATH=$HOME/.m2/repository-restored
 
         (set -x; ls -lart ~/.m2)
@@ -575,6 +602,58 @@ jobs:
           (set -x; mkdir -p "$RESTORED_MAVEN_REPO_PATH")
         fi
         echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >>$GITHUB_OUTPUT
+
+
+    - name: Get Certificate for JAR Signing
+      if: ${{ needs.init.outputs.HAS_JARSIGNER_KEYSTORE && matrix.RELEASE_NAME && !env.ACT }}
+      id: GET_JARSIGNER_CERT
+      env:
+        CERT_DB: ${{ secrets.JARSIGNER_KEYSTORE }}
+        CERT_ALIAS: ${{ inputs.jarsigner-alias }}
+      run: |
+        set -euo pipefail
+
+        mkdir -p /tmp/certdb
+        echo "$CERT_DB" | base64 --decode | tar xvz -C /tmp/certdb
+
+        LIVE_DIR="/tmp/certdb/etc/letsencrypt/live"
+
+        if [[ -z "${CERT_ALIAS:-}" ]];  then # auto-detect alias if not provided
+          mapfile -t subdirs < <(find "$LIVE_DIR" -maxdepth 1 -mindepth 1 -type d)
+          case ${#subdirs[@]} in
+            1) CERT_ALIAS=$(basename "${subdirs[0]}")
+               echo "Detected single live-cert directory: $CERT_ALIAS"
+               ;;
+            0) echo "❌ No subdirectories found in $LIVE_DIR; cannot determine CERT_ALIAS" >&2
+               exit 1
+               ;;
+            *) echo "❌ Multiple subdirectories found in $LIVE_DIR; please set jarsigner-alias explicitly" >&2
+               printf '  - %s\n' "${subdirs[@]##*/}" >&2
+               exit 1
+               ;;
+          esac
+        fi
+
+        KEYSTORE_PATH="/tmp/${CERT_ALIAS}.p12"
+        KEYSTORE_PW=whatever
+
+        (
+           export KEYSTORE_PW 
+           set -x
+           openssl pkcs12 -export \
+             -inkey "$LIVE_DIR/$CERT_ALIAS/privkey.pem" \
+             -in "$LIVE_DIR/$CERT_ALIAS/fullchain.pem" \
+             -name "$CERT_ALIAS" \
+             -password env:KEYSTORE_PW \
+             -out "$KEYSTORE_PATH"
+           keytool -list \
+             -keystore "$KEYSTORE_PATH" \
+             -keypass:env KEYSTORE_PW \
+             -storepass:env KEYSTORE_PW
+        )
+
+        echo "KEYSTORE_PATH=$KEYSTORE_PATH" >>"$GITHUB_OUTPUT"
+        echo "KEYSTORE_PW=$KEYSTORE_PW" >>"$GITHUB_OUTPUT"
 
 
     - name: "Before Build: Custom Bash script"
@@ -600,6 +679,11 @@ jobs:
         TEST_JDK_VENDOR:     ${{ matrix.TEST_JDK_VENDOR }}
         TEST_JDK_VERSION:    ${{ matrix.TEST_JDK_VERSION }}
         TEST_JDK_HOME:       ${{ steps.JDKS.outputs.TEST_JDK_HOME }}
+
+        # https://maven.apache.org/plugins/maven-jarsigner-plugin/
+        JARSIGNER_KEYSTORE_PATH:  ${{ steps.GET_JARSIGNER_CERT.outputs.KEYSTORE_PATH }}
+        JARSIGNER_KEYSTORE_PW:    ${{ steps.GET_JARSIGNER_CERT.outputs.KEYSTORE_PW }}
+        JARSIGNER_KEYSTORE_ALIAS: ${{ inputs.jarsigner-alias }}
       run: |
         set -euo pipefail
 
@@ -613,6 +697,17 @@ jobs:
           maven_args+=( "-Djava.version.unit-tests=${TEST_JDK_VERSION}" )
         fi
 
+        if [[ -n ${JARSIGNER_KEYSTORE_PATH:-} && -n ${JARSIGNER_KEYSTORE_PW:-} ]]; then
+          # https://maven.apache.org/plugins/maven-jarsigner-plugin/sign-mojo.html
+          maven_args+=("-Djarsigner.keystore=$JARSIGNER_KEYSTORE_PATH")
+          maven_args+=("-Djarsigner.keypass=$JARSIGNER_KEYSTORE_PW")
+          maven_args+=("-Djarsigner.storepass=$JARSIGNER_KEYSTORE_PW")
+          if [[ -n ${JARSIGNER_KEYSTORE_ALIAS:-} ]]; then
+            maven_args+=("-Djarsigner.alias=$JARSIGNER_KEYSTORE_ALIAS")
+          fi
+        fi
+
+        (set -x;
         # prevent "org.eclipse.swt.SWTError: No more handles [gtk_init_check() failed]" on Linux
         ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" \' || '' }}
         $maven \
@@ -621,7 +716,7 @@ jobs:
           "-Dtycho.target-platform.file=$TARGET_FILE" \
           "${maven_args[@]}" \
           $EXTRA_MAVEN_ARGS \
-          help:active-profiles clean verify || (
+          help:active-profiles clean verify) || (
             rc=$?
             if [[ ${ACT:-} != "true" ]]; then
               find . -path "*/target/work/data/.metadata/.log" | while IFS= read -r file; do
