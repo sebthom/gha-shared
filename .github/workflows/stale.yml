@@ -23,4 +23,4 @@ jobs:
       - name: Git Checkout
         uses: actions/checkout@v4  # https://github.com/actions/checkout
       - name: Run stale action
-        uses: ./.github/actions/stale@v1
+        uses: ./.github/actions/stale
