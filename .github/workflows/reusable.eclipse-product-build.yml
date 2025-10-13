@@ -62,7 +62,7 @@ on:
 
       maven-jdk:
         description: "The JDK to run Apache Maven, either major version like 11, 17 or with vendor like 'temurin@11'"
-        default: temurin@21
+        default: temurin@25
         type: string
       maven-versions:
         description: >
