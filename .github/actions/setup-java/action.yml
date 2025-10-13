@@ -1,4 +1,4 @@
-# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 name: Install JDKs
 description: >
   Installs Java JDKs via SDKMAN!, reusing pre-installed JDKs on the runner and registers them with ~/.m2/toolchains.xml.

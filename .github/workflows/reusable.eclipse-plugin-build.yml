@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
-# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 name: Eclipse Plugin Build
 
 on:
   workflow_call:
 
-    inputs:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callinputs
+    inputs:  # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_callinputs
       runs-on:
         description: >
           A comma- or newline-separated list of GitHub Actions runner labels (for example: `ubuntu-latest,windows-latest`).  
