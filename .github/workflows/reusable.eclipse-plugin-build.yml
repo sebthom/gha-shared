@@ -861,9 +861,8 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh extension install actions/gh-actions-cache
         # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
-        gh actions-cache delete ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }} --confirm || true
+        gh cache delete ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }} || true
 
     - name: "Cache: Save (Local Maven Repository)"
       uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
@@ -887,7 +886,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
-        gh actions-cache delete ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }} --confirm || true
+        gh cache delete ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }} || true
 
 
     - name: "Cache: Save (Local Tycho Repository)"
