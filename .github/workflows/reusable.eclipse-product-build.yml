@@ -387,7 +387,7 @@ jobs:
     - name: Git Checkout
       uses: actions/checkout@v6  # https://github.com/actions/checkout
       with:
-        fetch-depth: 0  # required for release notes and to prevent tycho-p2-extras-plugin:compare-version-with-baseline potentially failing the build
+        fetch-depth: 0  # required to prevent tycho-p2-extras-plugin:compare-version-with-baseline potentially failing the build
 
 
     - name: Download workflow resources
@@ -480,7 +480,7 @@ jobs:
 
 
     - name: "Cache: Restore (Local Maven Repository)"
-      id: CACHE-RESTORE-MAVEN
+      id: CACHE_RESTORE_MAVEN
       uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found 
@@ -498,7 +498,7 @@ jobs:
 
 
     - name: "Cache: Restore (Local Tycho Repository)"
-      id: CACHE-RESTORE-TYCHO
+      id: CACHE_RESTORE_TYCHO
       uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found
@@ -512,7 +512,7 @@ jobs:
 
 
     - name: "Move Restored Local Maven Repo"
-      if: ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-hit }}
+      if: ${{ steps.CACHE_RESTORE_MAVEN.outputs.cache-hit }}
       id: MOVE_RESTORED_MAVEN_REPO
       run: |
         set -euxo pipefail
@@ -659,7 +659,7 @@ jobs:
 
 
     - name: Locate release archive
-      id: find_release_archive
+      id: FIND_RELEASE_ARCHIVE
       if: ${{ matrix.RELEASE_NAME }}  # only when we're actually releasing
       env:
         RELEASE_ARCHIVE_GLOB: ${{ inputs.release-archive-glob }}
@@ -710,77 +710,14 @@ jobs:
 
 
     - name: "Build release notes from commits"
+      id: BUILD_RELEASE_NOTES
       if: ${{ matrix.RELEASE_NAME }}
-      env:
-        RELEASE_NAME: ${{ matrix.RELEASE_NAME }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        set -eu
-
-        # determine commit of the previous GitHub release (if any)
-        PREV_SHA="$(gh api  repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_NAME} --jq '.target_commitish' 2>/dev/null || echo '')"
-
-        if [ -n "$PREV_SHA" ]; then
-          RANGE="$PREV_SHA..$GITHUB_SHA"
-        else
-          # first run: just use recent commits
-          RANGE="${GITHUB_SHA}~50..$GITHUB_SHA"
-        fi
-
-        tmpdir="$(mktemp -d)"
-        git log "$RANGE" --pretty='%H%x09%h%x09%s' > "$tmpdir/commits.tsv" || true
-
-        # build map: full SHA -> GitHub login
-        cut -f1 "$tmpdir/commits.tsv" | sort -u | while read -r sha; do
-          [ -z "$sha" ] && continue
-          login="$(gh api repos/${GITHUB_REPOSITORY}/commits/$sha --jq '.author.login // .committer.login // ""' 2>/dev/null || echo '')"
-          if [ -n "$login" ]; then
-            printf '%s\t%s\n' "$sha" "$login"
-          fi
-        done > "$tmpdir/logins.tsv" || true
-
-        awk -F'\t' -v tmp="$tmpdir" '
-          BEGIN {
-            while ((getline line < (tmp "/logins.tsv")) > 0) {
-              split(line, f, "\t");
-              if (length(f[1]) && length(f[2])) {
-                login[f[1]] = f[2];
-              }
-            }
-            close(tmp "/logins.tsv");
-          }
-          {
-            full=$1;
-            hash=$2;
-            text=$3;
-            mention = (full in login ? " (@" login[full] ")" : "");
-            line="- " hash " " text mention;
-            if (text ~ /^fix\(deps\):/) {
-              print line >> (tmp "/deps.md");
-            } else if (text ~ /^fix(\(.+\))?:/) {
-              print line >> (tmp "/fixes.md");
-            } else if (text ~ /^feat(\(.+\))?:/) {
-              print line >> (tmp "/features.md");
-            } else {
-              print line >> (tmp "/others.md");
-            }
-          }
-        ' "$tmpdir/commits.tsv"
-
-        section() {
-          local title="$1" file="$2"
-          if [ -s "$file" ]; then
-            echo "## $title" >> release-notes.md
-            cat "$file" >> release-notes.md
-            echo >> release-notes.md
-          fi
-        }
-
-        : > release-notes.md
-        section "Fixes" "$tmpdir/fixes.md"
-        section "Features" "$tmpdir/features.md"
-        section "Dependency updates" "$tmpdir/deps.md"
-        section "Other changes" "$tmpdir/others.md"
+      uses: ./.git/tmp/gha-shared/.github/actions/build-release-notes
+      with:
+        release-name: ${{ matrix.RELEASE_NAME }}
+        preview-release-name: preview
+        stable-release-name: stable
+        github-token: ${{ secrets.GITHUB_TOKEN }}
 
 
     - name: "Delete previous '${{ matrix.RELEASE_NAME }}' release"
@@ -806,7 +743,7 @@ jobs:
           --title "$RELEASE_NAME" \
           ${{ matrix.RELEASE_NAME == 'stable' && '--latest' || '' }} \
           ${{ matrix.RELEASE_NAME == 'preview' && '--prerelease' || '' }} \
-          --notes-file release-notes.md \
+          --notes-file ${{ steps.BUILD_RELEASE_NOTES.outputs.release-notes-file }} \
           --target "${{ github.sha }}" \
           product/target/products/${PRODUCT_UID}-linux.gtk.x86_64.tar.gz \
           product/target/products/${PRODUCT_UID}-macosx.cocoa.aarch64.tar.gz \
@@ -822,7 +759,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITHUB_REPO:  ${{ github.repository }}
         BRANCH_NAME:  ${{ matrix.UPDATESITE_BRANCH }}
-        RELEASE_ARCHIVE: ${{ steps.find_release_archive.outputs.archive }}
+        RELEASE_ARCHIVE: ${{ steps.FIND_RELEASE_ARCHIVE.outputs.archive }}
       run: |
         set -euo pipefail
 
@@ -877,12 +814,12 @@ jobs:
     # See https://github.com/actions/cache/issues/342#issuecomment-1399442670
     ##################################################
     - name: "Cache: Delete Outdated (Local Maven Repository)"
-      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() && steps.CACHE-RESTORE-MAVEN.outputs.cache-hit && !env.ACT }}
+      if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() && steps.CACHE_RESTORE_MAVEN.outputs.cache-hit && !env.ACT }}
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
-        gh cache delete ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }} || true
+        gh cache delete ${{ steps.CACHE_RESTORE_MAVEN.outputs.cache-primary-key }} || true
 
     - name: "Cache: Save (Local Maven Repository)"
       uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
@@ -897,16 +834,16 @@ jobs:
           !~/.m2/repository/com/vegardit/no-npe
           !~/.m2/repository/p2
           !~/.m2/repository/*SNAPSHOT*
-        key: ${{ steps.CACHE-RESTORE-MAVEN.outputs.cache-primary-key }}
+        key: ${{ steps.CACHE_RESTORE_MAVEN.outputs.cache-primary-key }}
 
 
     - name: "Cache: Delete Outdated (Local Tycho Repository)"
-      if: ${{ matrix.CAN_UPDATE_TYCHO_CACHE && always() && !cancelled() && steps.CACHE-RESTORE-TYCHO.outputs.cache-hit && !env.ACT }}
+      if: ${{ matrix.CAN_UPDATE_TYCHO_CACHE && always() && !cancelled() && steps.CACHE_RESTORE_TYCHO.outputs.cache-hit && !env.ACT }}
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # "|| true" is to avoid "Error: Resource not accessible by integration" from failing the job 
-        gh cache delete ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }} || true
+        gh cache delete ${{ steps.CACHE_RESTORE_TYCHO.outputs.cache-primary-key }} || true
 
 
     - name: "Cache: Save (Local Tycho Repository)"
@@ -917,7 +854,7 @@ jobs:
           ~/.m2/repository/.cache/tycho
           ~/.m2/repository/.meta/p2-artifacts.properties
           ~/.m2/repository/p2
-        key: ${{ steps.CACHE-RESTORE-TYCHO.outputs.cache-primary-key }}
+        key: ${{ steps.CACHE_RESTORE_TYCHO.outputs.cache-primary-key }}
 
 
     ##################################################
@@ -993,7 +930,7 @@ jobs:
 
     steps:
     - name: Dependabot metadata
-      id: metadata
+      id: METADATA
       uses: dependabot/fetch-metadata@v2  # https://github.com/dependabot/fetch-metadata/
       with:
         github-token: "${{ secrets.GITHUB_TOKEN }}"
@@ -1002,10 +939,10 @@ jobs:
     - name: Enable auto-merge for Dependabot PRs
       if: >-
         ${{
-          (steps.metadata.outputs.package-ecosystem == 'github-actions' ||
-           steps.metadata.outputs.package-ecosystem == 'maven') &&
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
-           steps.metadata.outputs.update-type == 'version-update:semver-patch')
+          (steps.METADATA.outputs.package-ecosystem == 'github-actions' ||
+           steps.METADATA.outputs.package-ecosystem == 'maven') &&
+          (steps.METADATA.outputs.update-type == 'version-update:semver-minor' ||
+           steps.METADATA.outputs.update-type == 'version-update:semver-patch')
         }}
       env:
         PR_URL: ${{github.event.pull_request.html_url}}
