@@ -420,7 +420,7 @@ jobs:
 
 
     - name: Git Checkout
-      uses: actions/checkout@v5  # https://github.com/actions/checkout
+      uses: actions/checkout@v6  # https://github.com/actions/checkout
       with:
         fetch-depth: 0  # required to prevent tycho-p2-extras-plugin:compare-version-with-baseline potentially failing the build
 
@@ -996,7 +996,7 @@ jobs:
     if: needs.init.outputs.HAS_CODECOV_TOKEN && (github.ref_name == inputs.development-branch || github.event_name == 'pull_request') && !github.event.act
     steps:
     - name: Git Checkout  # required to avoid https://docs.codecov.com/docs/error-reference#unusable-reports
-      uses: actions/checkout@v5  # https://github.com/actions/checkout
+      uses: actions/checkout@v6  # https://github.com/actions/checkout
 
 
     - name: Download coverage reports
