@@ -10,6 +10,7 @@
    1. [Eclipse Product Build](#reusable-workflow-product-plugin-build)
 1. [Shared Actions](#shared-actions)
    1. [Build Release Notes](#shared-action-build-release-notes)
+   1. [Cleanup Release](#shared-action-cleanup-release)
    1. [Stale](#shared-action-stale)
 1. [License](#license)
 
@@ -255,6 +256,7 @@ jobs:
 | Action Name           | Path                                             | Description
 | ----------------------| -------------------------------------------------| -----------
 | `build-release-notes` | `.github/actions/build-release-notes/action.yml` | Builds GitHub release notes from commits (preview vs stable aware).
+| `cleanup-release`     | `.github/actions/cleanup-release/action.yml`     | Deletes or archives the previous release (stable-aware) before creating a new one.
 | `stale`               | `.github/actions/stale/action.yaml`              | Marks dormant issues as stale
 
 ### <a name="shared-action-build-release-notes"></a>Shared Action: Build Release Notes
@@ -323,6 +325,48 @@ jobs:
 | `release-notes-file`| Path to the generated release notes file (Markdown), suitable for `gh release create --notes-file`.
 
 *For full details, see the [.github/actions/build-release-notes/action.yml](.github/actions/build-release-notes/action.yml)*
+
+### <a name="shared-action-cleanup-release"></a>Shared Action: Cleanup Release
+
+A composite action that deletes or archives an existing release before creating a new one.
+
+Behavior:
+1. If `release-name != stable-release-name`:
+   - Deletes the existing release (if present) and its tag using `gh release delete --cleanup-tag`.
+1. If `release-name == stable-release-name`:
+   - If the stable tag points at the current commit: deletes the existing stable release/tag instead of archiving.
+   - If the stable tag points at an older commit and a stable release exists:
+     - Derives a timestamp from the old release's `publishedAt` and builds `stable.YYYY-MM-DD_HH-MM-SS`.
+     - Creates and pushes that tag on the old commit and edits the old release to use that tag/title.
+     - Deletes the plain stable tag so the new stable release can be created on the current commit.
+   - If there is only a stable tag and no release: deletes the tag without archiving.
+
+#### Example
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cleanup previous stable release
+        uses: sebthom/gha-shared/.github/actions/cleanup-release@v1
+        with:
+          release-name: stable
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # stable-release-name defaults to 'stable'
+```
+
+#### Inputs
+
+| Input Name           | Type   | Default               | Description
+| -------------------- | ------ | --------------------- | -----------
+| `release-name`       | string | -                     | **Required.** Name of the release/tag being created (e.g. `preview`, `stable`).
+| `stable-release-name`| string | `stable`              | Name of the release/tag treated as "stable" for archiving behavior.
+| `github-token`       | string | `${{ github.token }}` | Token used for GitHub CLI/API calls.
+
+*For full details, see the [.github/actions/cleanup-previous-release/action.yml](.github/actions/cleanup-previous-release/action.yml)*
 
 ### <a name="shared-action-stale"></a>Shared Action: Stale
 

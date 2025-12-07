@@ -720,14 +720,13 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
 
 
-    - name: "Delete previous '${{ matrix.RELEASE_NAME }}' release"
+    - name: "Cleanup previous '${{ matrix.RELEASE_NAME }}' release"
       if: ${{ matrix.RELEASE_NAME }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RELEASE_NAME: ${{ matrix.RELEASE_NAME }}
-      # https://cli.github.com/manual/gh_release_delete
-      run: |
-        GH_DEBUG=1 gh release delete "$RELEASE_NAME" --yes --cleanup-tag || true
+      uses: ./.git/tmp/gha-shared/.github/actions/cleanup-release
+      with:
+        release-name:        ${{ matrix.RELEASE_NAME }}
+        stable-release-name: stable
+        github-token:        ${{ secrets.GITHUB_TOKEN }}
 
 
     - name: "Create '${{ matrix.RELEASE_NAME }}' release"

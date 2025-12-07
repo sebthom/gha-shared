@@ -1,0 +1,115 @@
+# https://docs.github.com/en/actions/creating-actions/creating-a-composite-action
+name: Cleanup previous GitHub release
+description: >
+  Deletes or archives the previous GitHub release before creating a new one.
+  - For non-stable releases (release-name != stable-release-name), the previous release is deleted.
+  - For stable releases, the previous stable release is archived under a timestamped tag
+    (stable.YYYY-MM-DD_HH-MM-SS) and the plain stable tag is freed for the new release.
+
+inputs:
+  release-name:
+    description: "Name of the release/tag that will be created (e.g. 'preview' or 'stable')"
+    required: true
+  stable-release-name:
+    description: "Release name/tag considered 'stable'; previous stable releases are archived instead of deleted"
+    required: false
+    default: stable
+  github-token:
+    description: "GitHub token used for GitHub CLI/API calls"
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Cleanup previous release
+    shell: bash
+    env:
+      RELEASE_NAME:        ${{ inputs.release-name }}
+      STABLE_RELEASE_NAME: ${{ inputs.stable-release-name }}
+      GITHUB_TOKEN:        ${{ inputs.github-token }}
+    run: |
+      set -euo pipefail
+
+      echo "::group::Cleanup previous release: $RELEASE_NAME"
+
+      if [[ -z "${RELEASE_NAME:-}" ]]; then
+        echo "No release name provided; nothing to do."
+        echo "::endgroup::"
+        exit 0
+      fi
+
+      if [[ "$RELEASE_NAME" != "$STABLE_RELEASE_NAME" ]]; then
+        echo "Deleting previous non-stable release '$RELEASE_NAME' (if it exists)..."
+        GH_DEBUG=1 gh release delete "$RELEASE_NAME" --yes --cleanup-tag || true
+        echo "::endgroup::"
+        exit 0
+      fi
+
+      echo "Handling previous stable release '$STABLE_RELEASE_NAME'..."
+
+      # Ensure we know about remote tags
+      git fetch --tags origin || true
+
+      # If there is no stable tag, there is nothing to archive
+      if ! git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
+        echo "No existing '$STABLE_RELEASE_NAME' tag found, nothing to archive."
+        echo "::endgroup::"
+        exit 0
+      fi
+
+      commit_sha=$(git rev-list -n 1 "$STABLE_RELEASE_NAME")
+
+      # If the previous stable already points to the current commit, do not archive it;
+      # delete the old release/tag so a fresh one can be created.
+      if [[ "${GITHUB_SHA:-}" == "$commit_sha" ]]; then
+        echo "Existing '$STABLE_RELEASE_NAME' tag already points at current commit; deleting instead of archiving."
+        if gh release view "$STABLE_RELEASE_NAME" >/dev/null 2>&1; then
+          GH_DEBUG=1 gh release delete "$STABLE_RELEASE_NAME" --yes --cleanup-tag || true
+        else
+          git tag -d "$STABLE_RELEASE_NAME" || true
+          git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+        fi
+        echo "::endgroup::"
+        exit 0
+      fi
+
+      # Prefer the old release's publication date (down to seconds) for the archive suffix.
+      # If there is no release, we simply remove the tag and do not archive it,
+      # because only releases carry attached build artifacts.
+      release_date=$(gh release view "$STABLE_RELEASE_NAME" --json publishedAt --jq .publishedAt 2>/dev/null || true)
+      if [[ -z "$release_date" || "$release_date" == "null" ]]; then
+        echo "No existing stable release; removing '$STABLE_RELEASE_NAME' tag without archiving."
+        if git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
+          git tag -d "$STABLE_RELEASE_NAME" || true
+        fi
+        git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+        echo "::endgroup::"
+        exit 0
+      fi
+
+      # Example: 2025-02-03T12:34:56Z -> stable.2025-02-03_12-34-56
+      date_part=${release_date%%T*}   # 2025-02-03
+      time_part=${release_date#*T}    # 12:34:56Z
+      time_part=${time_part%Z}        # 12:34:56
+      time_part=${time_part//:/-}     # 12-34-56
+      archive_suffix="${date_part}_${time_part}"
+      new_tag="${STABLE_RELEASE_NAME}.${archive_suffix}"
+
+      echo "Archiving previous stable release as '$new_tag' (commit $commit_sha)."
+
+      # Ensure the archive tag exists on the old commit before updating the release
+      git tag -f "$new_tag" "$commit_sha"
+      git push origin "refs/tags/$new_tag" --force
+
+      GH_DEBUG=1 gh release edit "$STABLE_RELEASE_NAME" --tag "$new_tag" --title "$new_tag"
+
+      # Remove the old stable tag locally and on the remote so the new stable
+      # release can recreate it for the current commit.
+      if git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
+        git tag -d "$STABLE_RELEASE_NAME" || true
+      fi
+      git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+
+      echo "::endgroup::"
+
