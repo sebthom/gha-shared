@@ -9,6 +9,7 @@
    1. [Eclipse Plugin Build](#reusable-workflow-eclipse-plugin-build)
    1. [Eclipse Product Build](#reusable-workflow-product-plugin-build)
 1. [Shared Actions](#shared-actions)
+   1. [Build Release Notes](#shared-action-build-release-notes)
    1. [Stale](#shared-action-stale)
 1. [License](#license)
 
@@ -110,7 +111,7 @@ jobs:
 | `maven-jdk`                         | str  | `temurin@21`             | The JDK used to run Maven itself, by major version or with vendor (e.g. `17` or `temurin@17`).
 | `maven-versions`                    | str  | -                        | A comma- or newline-separated list of Maven runtimes (e.g. `latest,3.6.1,mvnw`). Use `mvnw` to invoke `./mvnw`; otherwise specify a version or `latest`. Append `!` to allow failures (e.g. `3.6.3!`).
 | `extra-maven-args`                  | str  | -                        | Additional command-line flags to append to every Maven invocation (e.g. `-DskipTests`).
-| `maven-settings-file`               | str  | -                        | Path to a custom Maven `settings.xml`. If unset, the workflow uses [resource/maven/settings.xml](resource/maven/settings.xml)).
+| `maven-settings-file`               | str  | -                        | Path to a custom Maven `settings.xml`. If unset, the workflow uses [resources/maven/settings.xml](resources/maven/settings.xml)).
 | **Deployment:**
 | `development-branch`                | str  | `main`                   | Long-lived development branch that serves as the source for cutting Maven releases and publishing SNAPSHOT version (e.g., 'main' or 'develop').
 | `release-trigger-file`              | str  | `.ci/release-trigger.sh` | Path to a shell script that defines variables evaluated by the workflow to decide whether to perform an automatic Maven release. Defines `POM_CURRENT_VERSION`, `POM_RELEASE_VERSION`, `DRY_RUN`, and `SKIP_TESTS`. When on `development-branch` and versions match, a release is cut automatically.
@@ -251,10 +252,77 @@ jobs:
 
 ## <a name="shared-actions"></a>Shared Actions
 
-| Action Name      | Path                                | Description
-| -----------------| ------------------------------------| -----------
-| `stale`          | `.github/actions/stale/action.yaml` | Marks dormant issues as stale
+| Action Name           | Path                                             | Description
+| ----------------------| -------------------------------------------------| -----------
+| `build-release-notes` | `.github/actions/build-release-notes/action.yml` | Builds GitHub release notes from commits (preview vs stable aware).
+| `stale`               | `.github/actions/stale/action.yaml`              | Marks dormant issues as stale
 
+### <a name="shared-action-build-release-notes"></a>Shared Action: Build Release Notes
+
+A composite action that builds GitHub release notes from commits between a baseline release and the current commit.
+It is aware of preview vs stable releases, so preview release notes can be generated relative to the latest stable release.
+
+Behavior:
+1. Fetches enough history (for shallow checkouts) for the current branch and configured preview/stable tags.
+1. Determines the base commit:
+   - For the configured preview release name (default `preview`): uses the target commit of the configured stable release (default `stable`).
+   - For any other release name (e.g. `stable`): uses the previous release with the same tag name.
+   - If no suitable baseline release exists, falls back to the last 50 commits.
+1. Groups commits into sections based on their Conventional Commit-style prefix:
+   - `feat(...)` → **Features**
+   - `fix(...)` (excluding `fix(deps):`) → **Fixes**
+   - `fix(deps):` → **Dependency updates**
+   - everything else → **Other changes**
+1. Enriches entries with GitHub logins (e.g. `(@user)`) when resolvable via the GitHub API.
+
+#### Example
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1 # not strictly required; the action will fetch what it needs
+
+      - name: Build release notes from commits
+        id: release_notes
+        uses: sebthom/gha-shared/.github/actions/build-release-notes@v1
+        with:
+          release-name: preview
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # optional overrides (defaults shown):
+          # preview-release-name: preview
+          # stable-release-name: stable
+
+      - name: Create GitHub release
+        env:
+          RELEASE_NOTES_FILE: ${{ steps.release_notes.outputs.release-notes-file }}
+        run: |
+          gh release create "preview" \
+            --title "preview" \
+            --prerelease \
+            --notes-file "$RELEASE_NOTES_FILE" \
+            --target "${GITHUB_SHA}"
+```
+
+#### Inputs
+
+| Input Name            | Type   | Default               | Description
+| --------------------- | ------ | --------------------- | -----------
+| `release-name`        | string | -                     | **Required.** Name of the release/tag being created (e.g. `preview`, `stable`, or any other tag).
+| `github-token`        | string | `${{ github.token }}` | Token used for GitHub API calls (`gh api`).
+| `preview-release-name`| string | `preview`             | Tag name that identifies preview releases; used to decide when to diff against the stable baseline.
+| `stable-release-name` | string | `stable`              | Tag name that identifies the stable baseline release used for preview diffs.
+
+#### Outputs
+
+| Output Name         | Description
+| ------------------- | -----------
+| `release-notes-file`| Path to the generated release notes file (Markdown), suitable for `gh release create --notes-file`.
+
+*For full details, see the [.github/actions/build-release-notes/action.yml](.github/actions/build-release-notes/action.yml)*
 
 ### <a name="shared-action-stale"></a>Shared Action: Stale
 
@@ -305,6 +373,7 @@ jobs:
 
 
 *For full details, see the [.github/actions/stale/action.yml](.github/actions/stale/action.yml)*
+
 
 ## <a name="license"></a>License
 

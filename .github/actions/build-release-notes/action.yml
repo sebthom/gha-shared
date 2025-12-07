@@ -1,0 +1,161 @@
+# https://docs.github.com/en/actions/creating-actions/creating-a-composite-action
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+name: Build release notes from commits
+description: >
+  Builds release notes based on commits between the previous release and the current commit,
+  with special handling for preview vs stable releases.
+
+inputs:
+  release-name:
+    description: "Name of the release tag (e.g. 'preview' or 'stable')"
+    required: true
+  github-token:
+    description: "GitHub token used for API calls"
+    required: false
+    default: ${{ github.token }}
+  preview-release-name:
+    description: "Tag name that identifies a preview release"
+    required: false
+    default: preview
+  stable-release-name:
+    description: "Tag name that identifies the latest stable baseline release"
+    required: false
+    default: stable
+
+outputs:
+  release-notes-file:
+    description: "Path to the generated release notes file"
+    value: ${{ steps.build.outputs.file }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Ensure history for release notes
+    shell: bash
+    env:
+      PREVIEW_RELEASE_NAME: ${{ inputs.preview-release-name }}
+      STABLE_RELEASE_NAME: ${{ inputs.stable-release-name }}
+      GITHUB_TOKEN: ${{ inputs.github-token }}
+    run: |
+      set -eu
+
+      # ensure sufficient history is available for release notes
+      if git rev-parse --is-shallow-repository >/dev/null 2>&1 && [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+        echo "Repository is shallow, attempting to fetch current branch and release tags for release notes..."
+
+        current_ref=""
+        case "${GITHUB_REF:-}" in
+          refs/heads/*) current_ref="${GITHUB_REF#refs/heads/}" ;;
+        esac
+        if [ -z "$current_ref" ]; then
+          # Fallback to local branch name; may be empty or 'HEAD' for detached
+          current_ref="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+          [ "$current_ref" = "HEAD" ] && current_ref=""
+        fi
+
+        refspecs=()
+        if [ -n "$current_ref" ]; then
+          refspecs+=("refs/heads/$current_ref:refs/remotes/origin/$current_ref")
+        fi
+        if [ -n "${PREVIEW_RELEASE_NAME:-}" ]; then
+          refspecs+=("refs/tags/$PREVIEW_RELEASE_NAME:refs/tags/$PREVIEW_RELEASE_NAME")
+        fi
+        if [ -n "${STABLE_RELEASE_NAME:-}" ]; then
+          refspecs+=("refs/tags/$STABLE_RELEASE_NAME:refs/tags/$STABLE_RELEASE_NAME")
+        fi
+
+        if [ "${#refspecs[@]}" -eq 0 ]; then
+          echo "No branch or release tags to fetch detected; skipping targeted fetch." >&2
+        else
+          if ! git fetch --prune --no-tags origin "${refspecs[@]}"; then
+            echo "Warning: targeted git fetch failed, falling back to --unshallow..." >&2
+            if ! git fetch --prune --unshallow; then
+              echo "Warning: git fetch --unshallow failed, release notes may be incomplete." >&2
+            fi
+          fi
+        fi
+      fi
+
+  - name: Build release notes from commits
+    id: build
+    shell: bash
+    env:
+      RELEASE_NAME: ${{ inputs.release-name }}
+      PREVIEW_RELEASE_NAME: ${{ inputs.preview-release-name }}
+      STABLE_RELEASE_NAME: ${{ inputs.stable-release-name }}
+      GITHUB_TOKEN: ${{ inputs.github-token }}
+    run: |
+      set -eu
+
+      # determine base commit for changelog
+      if [ "$RELEASE_NAME" = "$PREVIEW_RELEASE_NAME" ]; then
+        # For preview: compare against the configured stable-like release
+        BASE_SHA="$(gh api repos/${GITHUB_REPOSITORY}/releases/tags/$STABLE_RELEASE_NAME --jq '.target_commitish' 2>/dev/null || echo '')"
+      else
+        # For stable (and any other name): compare against previous same-name release
+        BASE_SHA="$(gh api repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_NAME} --jq '.target_commitish' 2>/dev/null || echo '')"
+      fi
+
+      if [ -n "$BASE_SHA" ]; then
+        RANGE="$BASE_SHA..$GITHUB_SHA"
+      else
+        # first run / no stable release yet: just use recent commits
+        RANGE="${GITHUB_SHA}~50..$GITHUB_SHA"
+      fi
+
+      tmpdir="$(mktemp -d)"
+      git log "$RANGE" --pretty='%H%x09%h%x09%s' > "$tmpdir/commits.tsv" || true
+
+      # build map: full SHA -> GitHub login
+      cut -f1 "$tmpdir/commits.tsv" | sort -u | while read -r sha; do
+        [ -z "$sha" ] && continue
+        login="$(gh api repos/${GITHUB_REPOSITORY}/commits/$sha --jq '.author.login // .committer.login // ""' 2>/dev/null || echo '')"
+        if [ -n "$login" ]; then
+          printf '%s\t%s\n' "$sha" "$login"
+        fi
+      done > "$tmpdir/logins.tsv" || true
+
+      awk -F'\t' -v tmp="$tmpdir" '
+        BEGIN {
+          while ((getline line < (tmp "/logins.tsv")) > 0) {
+            split(line, f, "\t");
+            if (length(f[1]) && length(f[2])) {
+              login[f[1]] = f[2];
+            }
+          }
+          close(tmp "/logins.tsv");
+        }
+        {
+          full=$1;
+          hash=$2;
+          text=$3;
+          mention = (full in login ? " (@" login[full] ")" : "");
+          line="- " hash " " text mention;
+          if (text ~ /^fix\(deps\):/) {
+            print line >> (tmp "/deps.md");
+          } else if (text ~ /^fix(\(.+\))?:/) {
+            print line >> (tmp "/fixes.md");
+          } else if (text ~ /^feat(\(.+\))?:/) {
+            print line >> (tmp "/features.md");
+          } else {
+            print line >> (tmp "/others.md");
+          }
+        }
+      ' "$tmpdir/commits.tsv"
+
+      section() {
+        local title="$1" file="$2"
+        if [ -s "$file" ]; then
+          echo "## $title" >> "$tmpdir/release-notes.md"
+          cat "$file" >> "$tmpdir/release-notes.md"
+          echo >> "$tmpdir/release-notes.md"
+        fi
+      }
+
+      : > "$tmpdir/release-notes.md"
+      section "Fixes" "$tmpdir/fixes.md"
+      section "Features" "$tmpdir/features.md"
+      section "Dependency updates" "$tmpdir/deps.md"
+      section "Other changes" "$tmpdir/others.md"
+
+      echo "file=$tmpdir/release-notes.md" >>"$GITHUB_OUTPUT"
