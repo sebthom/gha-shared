@@ -910,7 +910,7 @@ jobs:
 
 
     - name: Collect coverage reports
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       if: matrix.UPLOAD_TO_CODECOV && (github.ref_name == 'main' || github.event_name == 'pull_request') && !env.ACT
       with:
         name: coverage-java${{ matrix.TEST_JDK_VERSION }}
