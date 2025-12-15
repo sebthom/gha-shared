@@ -502,7 +502,7 @@ jobs:
 
     - name: "Cache: Restore (Local Maven Repository)"
       id: CACHE_RESTORE_MAVEN
-      uses: actions/cache/restore@v4  # https://github.com/actions/cache/blob/main/restore/README.md
+      uses: actions/cache/restore@v5  # https://github.com/actions/cache/blob/main/restore/README.md
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found 
         path: |
@@ -689,7 +689,7 @@ jobs:
         gh cache delete ${{ steps.CACHE_RESTORE_MAVEN.outputs.cache-primary-key }} || true
 
     - name: "Cache: Save (Local Maven Repository)"
-      uses: actions/cache/save@v4  # https://github.com/actions/cache/blob/main/save/README.md
+      uses: actions/cache/save@v5  # https://github.com/actions/cache/blob/main/save/README.md
       if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() }}  # save the cache even when the build failed
       with:
         # Excluded sub directory not working https://github.com/actions/toolkit/issues/713
