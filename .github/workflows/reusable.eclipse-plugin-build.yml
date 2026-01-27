@@ -88,10 +88,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
         description: >
           Determines whether Maven system properties reporting the JDK versions and vendors used during compilation and testing are automatically set.
           If enabled (`true`), the build includes these properties:
-            -Djava.version=<compile-jdk-major-version>  
-            -Djava.vendor=<compile-jdk-vendor>  
-            -Djava.version.unit-tests=<test-jdk-major-version>  
-            -Djava.vendor.unit-tests=<test-jdk-vendor>
+            -Djdk.version=<compile-jdk-major-version>  
+            -Djdk.vendor=<compile-jdk-vendor>  
+            -Djdk.version.unit-tests=<test-jdk-major-version>  
+            -Djdk.vendor.unit-tests=<test-jdk-vendor>
         # NOTE: using 'string' here is a WORKAROUND so the job doesn’t hang when the caller omits the value (push events pass 'undefined').
         type: string
         default: "true"
@@ -691,10 +691,10 @@ jobs:
 
         maven_args=()
         if [[ "${{ inputs.set-jdk-version-properties }}" == "true" ]]; then
-          maven_args+=( "-Djava.vendor=${COMPILE_JDK_VENDOR}" )
-          maven_args+=( "-Djava.version=${COMPILE_JDK_VERSION}" )
-          maven_args+=( "-Djava.vendor.unit-tests=${TEST_JDK_VENDOR}" )
-          maven_args+=( "-Djava.version.unit-tests=${TEST_JDK_VERSION}" )
+          maven_args+=( "-Djdk.vendor=${COMPILE_JDK_VENDOR}" )
+          maven_args+=( "-Djdk.version=${COMPILE_JDK_VERSION}" )
+          maven_args+=( "-Djdk.vendor.unit-tests=${TEST_JDK_VENDOR}" )
+          maven_args+=( "-Djdk.version.unit-tests=${TEST_JDK_VERSION}" )
         fi
 
         if [[ -n ${JARSIGNER_KEYSTORE_PATH:-} && -n ${JARSIGNER_KEYSTORE_PW:-} ]]; then
