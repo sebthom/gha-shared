@@ -713,7 +713,7 @@ jobs:
 
 
     - name: Upload test results to Codecov
-      uses: codecov/codecov-action@v6
+      uses: codecov/codecov-action@v7
       if: matrix.UPLOAD_TO_CODECOV && !cancelled() && !env.ACT
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
@@ -782,7 +782,7 @@ jobs:
 
 
     - name: Publish unit-test coverage
-      uses: codecov/codecov-action@v6  # https://github.com/codecov/codecov-action
+      uses: codecov/codecov-action@v7  # https://github.com/codecov/codecov-action
       with:
         slug: ${{ github.repository }}
         name: unit-coverage
@@ -794,7 +794,7 @@ jobs:
 
 
     - name: Publish integration-test coverage
-      uses: codecov/codecov-action@v6  # https://github.com/codecov/codecov-action
+      uses: codecov/codecov-action@v7  # https://github.com/codecov/codecov-action
       with:
         slug: ${{ github.repository }}
         name: integration-coverage
