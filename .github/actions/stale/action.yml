@@ -12,7 +12,8 @@ runs:
   using: "composite"
   steps:
   - name: Run stale action
-    uses: actions/stale@v9  # https://github.com/actions/stale
+    # https://github.com/actions/stale
+    uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
     with:
       repo-token: ${{ inputs.github-token }}
       days-before-stale: 90
@@ -28,7 +29,8 @@ runs:
       exempt-issue-labels: enhancement,pinned,security
 
   - name: Run stale action (for enhancements)
-    uses: actions/stale@v9  # https://github.com/actions/stale
+    # https://github.com/actions/stale
+    uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
     with:
       repo-token: ${{ inputs.github-token }}
       days-before-stale: 360

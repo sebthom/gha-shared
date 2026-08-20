@@ -146,6 +146,13 @@ jobs:
     runs-on: ubuntu-latest  # https://github.com/actions/runner-images#available-images
 
     steps:
+    - name: Harden the runner (Audit all outbound calls)
+      # https://github.com/step-security/harden-runner#getting-started
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+      with:
+        egress-policy: audit
+
+
     - name: "Show: GitHub context"
       env:
         GITHUB_CONTEXT: ${{ toJSON(github) }}
@@ -157,11 +164,13 @@ jobs:
 
 
     - name: Git Checkout
-      uses: actions/checkout@v7  # https://github.com/actions/checkout
+      # https://github.com/actions/checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
 
     - name: Lint shell scripts
-      uses: luizm/action-sh-checker@master  # https://github.com/marketplace/actions/sh-checker
+      # https://github.com/luizm/action-sh-checker
+      uses: luizm/action-sh-checker@883217215b11c1fabbf00eb1a9a041f62d74c744 # v0.10.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         SHFMT_OPTS: >
@@ -362,6 +371,13 @@ jobs:
 
 
     steps:
+    - name: Harden the runner (Audit all outbound calls)
+      # https://github.com/step-security/harden-runner#getting-started
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+      with:
+        egress-policy: audit
+
+
     - name: "Show: GitHub context"
       env:
         GITHUB_CONTEXT: ${{ toJSON(github) }}
@@ -385,7 +401,8 @@ jobs:
 
 
     - name: Git Checkout
-      uses: actions/checkout@v7  # https://github.com/actions/checkout
+      # https://github.com/actions/checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0  # required to prevent tycho-p2-extras-plugin:compare-version-with-baseline potentially failing the build
 
@@ -481,7 +498,8 @@ jobs:
 
     - name: "Cache: Restore (Local Maven Repository)"
       id: CACHE_RESTORE_MAVEN
-      uses: actions/cache/restore@v6  # https://github.com/actions/cache/blob/main/restore/README.md
+      # https://github.com/actions/cache/blob/main/restore/README.md
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found 
         path: |
@@ -499,7 +517,8 @@ jobs:
 
     - name: "Cache: Restore (Local Tycho Repository)"
       id: CACHE_RESTORE_TYCHO
-      uses: actions/cache/restore@v6  # https://github.com/actions/cache/blob/main/restore/README.md
+      # https://github.com/actions/cache/blob/main/restore/README.md
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # IMPORTANT: path must have exactly the same value as in the cache save step otherwise restore will fail with cache key not found
         path: |
@@ -821,7 +840,8 @@ jobs:
         gh cache delete ${{ steps.CACHE_RESTORE_MAVEN.outputs.cache-primary-key }} || true
 
     - name: "Cache: Save (Local Maven Repository)"
-      uses: actions/cache/save@v6  # https://github.com/actions/cache/blob/main/save/README.md
+      # https://github.com/actions/cache/blob/main/save/README.md
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: ${{ matrix.CAN_UPDATE_MAVEN_CACHE && always() && !cancelled() }}  # save the cache even when the build failed
       with:
         # Excluded sub directory not working https://github.com/actions/toolkit/issues/713
@@ -846,7 +866,8 @@ jobs:
 
 
     - name: "Cache: Save (Local Tycho Repository)"
-      uses: actions/cache/save@v6  # https://github.com/actions/cache/blob/main/save/README.md
+      # https://github.com/actions/cache/blob/main/save/README.md
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: ${{ matrix.CAN_UPDATE_TYCHO_CACHE && always() && !cancelled() }}  # save the cache even when the build failed
       with:
         path: |
@@ -886,7 +907,8 @@ jobs:
 
 
     - name: "SSH session for debugging: start"
-      uses: mxschmitt/action-tmate@v3  # https://github.com/mxschmitt/action-tmate
+      # https://github.com/mxschmitt/action-tmate
+      uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
       if: always() && steps.DEBUG_SSH_SESSSION_CHECK.outputs.start_ssh_session
       with:
         limit-access-to-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
@@ -928,9 +950,17 @@ jobs:
       pull-requests: write
 
     steps:
+    - name: Harden the runner (Audit all outbound calls)
+      # https://github.com/step-security/harden-runner#getting-started
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+      with:
+        egress-policy: audit
+
+
     - name: Dependabot metadata
       id: METADATA
-      uses: dependabot/fetch-metadata@v3  # https://github.com/dependabot/fetch-metadata/
+      # https://github.com/dependabot/fetch-metadata
+      uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
       with:
         github-token: "${{ secrets.GITHUB_TOKEN }}"
 

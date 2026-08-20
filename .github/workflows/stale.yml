@@ -8,7 +8,7 @@ name: Stale issues
 
 on:
   schedule:
-    - cron: '0 15 1,15 * *'
+  - cron: '0 15 1,15 * *'
   workflow_dispatch:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
 
@@ -20,7 +20,15 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - name: Git Checkout
-        uses: actions/checkout@v7  # https://github.com/actions/checkout
-      - name: Run stale action
-        uses: ./.github/actions/stale
+    - name: Harden the runner (Audit all outbound calls)
+      # https://github.com/step-security/harden-runner#getting-started
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+      with:
+        egress-policy: audit
+
+    - name: Git Checkout
+      # https://github.com/actions/checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Run stale action
+      uses: ./.github/actions/stale
