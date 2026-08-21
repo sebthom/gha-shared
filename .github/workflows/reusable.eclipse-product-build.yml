@@ -814,7 +814,7 @@ jobs:
               <title>$GITHUB_REPO - Update Site</title>
             </head>
             <body>
-            <h1>$$GITHUB_REPO - Update Site</h1>
+            <h1>$GITHUB_REPO - Update Site</h1>
             </body>
             </html>
         EOF
