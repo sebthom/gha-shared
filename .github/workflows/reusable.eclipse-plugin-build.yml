@@ -1093,7 +1093,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
     runs-on: ubuntu-latest
 
-    concurrency: dependabot-pr-auto-merge
+    concurrency: dependabot-pr-auto-merge-${{ github.event.pull_request.number }}
 
     permissions:
       contents: write
