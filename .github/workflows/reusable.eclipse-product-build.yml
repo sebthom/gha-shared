@@ -612,6 +612,8 @@ jobs:
           maven_args+=( "-Djdk.version.unit-tests=${TEST_JDK_VERSION}" )
         fi
 
+        # Word splitting is intentional: callers provide extra Maven arguments as a shell-split string.
+        # shellcheck disable=SC2086
         (set -x;
         $maven \
           -Declipse.p2.mirrors=false \

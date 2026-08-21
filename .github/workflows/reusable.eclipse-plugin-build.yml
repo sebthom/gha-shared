@@ -745,6 +745,8 @@ jobs:
           fi
         fi
 
+        # Word splitting is intentional: callers provide extra Maven arguments as a shell-split string.
+        # shellcheck disable=SC2086
         (set -x;
         # prevent "org.eclipse.swt.SWTError: No more handles [gtk_init_check() failed]" on Linux
         ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" \' || '' }}

@@ -701,6 +701,8 @@ jobs:
         fi
 
         set -x
+        # Word splitting is intentional: callers provide extra Maven arguments as a shell-split string.
+        # shellcheck disable=SC2086
         bash ./.git/tmp/gha-shared/resources/maven/build.sh \
           "${maven_args[@]}" \
           $EXTRA_MAVEN_ARGS
