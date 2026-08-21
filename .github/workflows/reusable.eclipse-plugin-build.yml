@@ -1023,7 +1023,7 @@ jobs:
   ###########################################################
   publish-coverage:
   ###########################################################
-    needs: [build]
+    needs: [init, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: needs.init.outputs.HAS_CODECOV_TOKEN && (github.ref_name == inputs.development-branch || github.event_name == 'pull_request') && !github.event.act
