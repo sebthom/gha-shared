@@ -14,6 +14,15 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
         description: "Maximum number of minutes the workflow is allowed to run before timing out"
         default: 30
         type: number
+      dependabot-merge-method:
+        description: "Merge method for eligible Dependabot PRs; supported values are 'squash' and 'rebase'"
+        default: squash
+        type: string
+      dependabot-use-auto-merge:
+        description: "Whether eligible Dependabot PRs should wait for branch requirements by using GitHub auto-merge"
+        # Preserve existing protected-branch behavior; callers without protected rules opt out explicitly.
+        default: true
+        type: boolean
 
       product-files:
         description: >
@@ -965,7 +974,7 @@ jobs:
         github-token: "${{ secrets.GITHUB_TOKEN }}"
 
 
-    - name: Enable auto-merge for Dependabot PRs
+    - name: Merge Dependabot PR
       if: >-
         ${{
           (steps.METADATA.outputs.package-ecosystem == 'github-actions' ||
@@ -975,6 +984,29 @@ jobs:
         }}
       env:
         PR_URL: ${{github.event.pull_request.html_url}}
+        PR_HEAD_SHA: ${{github.event.pull_request.head.sha}}
+        DEPENDABOT_MERGE_METHOD: ${{inputs.dependabot-merge-method}}
+        DEPENDABOT_USE_AUTO_MERGE: ${{inputs.dependabot-use-auto-merge}}
         GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
       run: |
-        gh pr merge --auto --rebase "$PR_URL"
+        # CI passed for a merge commit containing this head; a newer conflict-free base is allowed.
+        # Match the head commit so Dependabot cannot update the PR between that build and this merge.
+        # workflow_call string inputs cannot restrict values, so validate before forming a CLI argument.
+        case "$DEPENDABOT_MERGE_METHOD" in
+          squash) merge_method_flag=--squash ;;
+          rebase) merge_method_flag=--rebase ;;
+          *)
+            echo "Unsupported Dependabot merge method: $DEPENDABOT_MERGE_METHOD" >&2
+            exit 1
+            ;;
+        esac
+        merge_args=(
+          "$merge_method_flag"
+          --match-head-commit "$PR_HEAD_SHA"
+        )
+        # Protected branches may need `--auto` to wait for outstanding requirements, while branches
+        # without protection can reject enabling auto-merge. The caller knows which policy applies.
+        if [[ "$DEPENDABOT_USE_AUTO_MERGE" == "true" ]]; then
+          merge_args+=(--auto)
+        fi
+        gh pr merge "${merge_args[@]}" "$PR_URL"

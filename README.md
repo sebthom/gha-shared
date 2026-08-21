@@ -105,6 +105,9 @@ jobs:
 |**Runner:**
 | `runs-on`                           | str  | `ubuntu-latest`          | A comma- or newline-separated list of GitHub Actions runner labels (e.g. `ubuntu-latest,windows-latest`). Append `!` to any label to allow its job to fail without failing the overall workflow (e.g. `windows-latest!`).    |
 | `timeout-minutes`                   | int  | `30`                     | Maximum runtime (in minutes) for each job before GitHub cancels it.
+|**Dependabot:**
+| `dependabot-merge-method`           | str  | `squash`                 | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
+| `dependabot-use-auto-merge`         | bool | `true`                   | Whether eligible Dependabot PRs should wait for protected-branch requirements by using GitHub auto-merge. Set to `false` for branches without such requirements.
 |**Java:**
 | `compile-jdk`                       | str  | -                        | **REQUIRED** The JDK for compilation, either a major version (e.g. `11`, `17`) or vendor-qualified (`temurin@11`).
 | `test-jdks`                         | str  | -                        | A comma- or newline-separated list of additional JDKs to run unit tests against (e.g. `11,17` or `temurin@11`). Append `!` to allow failures for that JDK (e.g. `17!`).
@@ -194,6 +197,13 @@ jobs:
       pull-requests: write # for dependabot auto merges
 ```
 
+#### Dependabot Inputs
+
+| Name                        | Type | Default  | Description
+| --------------------------- | ---- | -------- | -----------
+| `dependabot-merge-method`   | str  | `squash` | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
+| `dependabot-use-auto-merge` | bool | `true`   | Whether eligible Dependabot PRs should wait for protected-branch requirements by using GitHub auto-merge. Set to `false` for branches without such requirements.
+
 *For full details, see the [.github/workflows/reusable.eclipse-plugin-build.yml](.github/workflows/reusable.eclipse-plugin-build.yml)*
 
 
@@ -247,6 +257,13 @@ jobs:
       contents: write      # to create releases (commit to updatesite branches)
       pull-requests: write # for dependabot auto merges
 ```
+
+#### Dependabot Inputs
+
+| Name                        | Type | Default  | Description
+| --------------------------- | ---- | -------- | -----------
+| `dependabot-merge-method`   | str  | `squash` | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
+| `dependabot-use-auto-merge` | bool | `true`   | Whether eligible Dependabot PRs should wait for protected-branch requirements by using GitHub auto-merge. Set to `false` for branches without such requirements.
 
 *For full details, see the [.github/workflows/reusable.eclipse-product-build.yml](.github/workflows/reusable.eclipse-product-build.yml)*
 
