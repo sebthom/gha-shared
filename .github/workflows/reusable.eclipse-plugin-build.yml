@@ -514,21 +514,21 @@ jobs:
       run: |
         set -eu
 
-        packages=xvfb
+        packages=(xvfb)
 
         # prevents: "Failed to execute child process “dbus-launch” (No such file or directory)"
-        packages+=" dbus-x11"
+        packages+=(dbus-x11)
 
         # prevents: "dbind-WARNING **: 20:17:55.046: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files"
         # see https://gist.github.com/jeffcogswell/62395900725acef1c0a5a608f7eb7a05
-        packages+=" at-spi2-core"
+        packages+=(at-spi2-core)
 
         # prevents:
         #  java.lang.UnsatisfiedLinkError: Could not load SWT library. Reasons:
         #    no swt-pi4-gtk-4956r13 in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
         #    no swt-pi4-gtk in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
         #    no swt-pi4 in java.library.path: /usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib
-        packages+=" libswt-gtk-*-java"
+        packages+=('libswt-gtk-*-java')
 
         # prevents: 
         #   java.io.IOException: Cannot run program "xdg-mime": error=2, No such file or directory
@@ -539,10 +539,10 @@ jobs:
         #     at org.eclipse.urischeme.internal.registration.RegistrationLinux.determineHandlerLocation(RegistrationLinux.java:86)
         #     at org.eclipse.urischeme.internal.registration.RegistrationLinux.getSchemesInformation(RegistrationLinux.java:75)
         #     at org.eclipse.urischeme.AutoRegisterSchemeHandlersJob.run(AutoRegisterSchemeHandlersJob.java:85)
-        packages+=" xdg-utils"
+        packages+=(xdg-utils)
         
         set -x
-        sudo apt-get install --no-install-recommends -y $packages
+        sudo apt-get install --no-install-recommends -y "${packages[@]}"
 
 
     - name: Install JDKs ☕
