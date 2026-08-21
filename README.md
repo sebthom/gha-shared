@@ -254,6 +254,7 @@ jobs:
 
       debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
+      debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
     permissions:
