@@ -116,6 +116,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
         required: false
         type: string
 
+      debug-logging:
+        description: "Print diagnostic context, matrix, outputs, and environment details to job logs"
+        default: false
+        type: boolean
       debug-with-ssh:
         description: >-
           When to open an SSH session for post-build debugging:
@@ -193,12 +197,14 @@ jobs:
 
 
     - name: "Show: GitHub context"
+      if: inputs.debug-logging
       env:
         GITHUB_CONTEXT: ${{ toJSON(github) }}
       run: printf '%s' "$GITHUB_CONTEXT" | python -m json.tool
 
 
     - name: "Show: environment variables"
+      if: inputs.debug-logging
       run: env | sort
 
 
@@ -423,22 +429,26 @@ jobs:
 
 
     - name: "Show: GitHub context"
+      if: inputs.debug-logging
       env:
         GITHUB_CONTEXT: ${{ toJSON(github) }}
       run: printf '%s' "$GITHUB_CONTEXT" | python -m json.tool
 
 
     - name: "Show: Matrix config"
+      if: inputs.debug-logging
       env:
         MATRIX: ${{ toJSON(matrix) }}
       run: printf '%s' "$MATRIX" | python -m json.tool
 
 
     - name: "Show: environment variables"
+      if: inputs.debug-logging
       run: env | sort
 
 
     - name: "Show: Init job outputs"
+      if: inputs.debug-logging
       env:
         JOB_OUTPUT: ${{ toJson(needs.init.outputs) }}
       run: printf '%s' "$JOB_OUTPUT" | python -m json.tool

@@ -81,6 +81,7 @@ jobs:
           (set -x; sudo apt-get install iputils-ping)
         fi
 
+      debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
       debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
@@ -125,6 +126,7 @@ jobs:
 | `before-build`                      | str  | -                        | Bash commands to run **before** the Maven build starts.
 | `after-build`                       | str  | -                        | Bash commands to run **after** the Maven build completes.
 |**Debugging:**
+| `debug-logging`                     | bool | `false`                  | Print diagnostic context, matrix, outputs, and environment details to job logs.
 | `debug-with-ssh`                    | str  | `never`                  | When to open an SSH session for post-build debugging: `always`, `on_failure`, `on_failure_or_cancelled`, or `never`.
 | `debug-with-ssh-only-for-actor`     | bool | `true`                   | Restrict SSH debug session access to the GitHub user who triggered the workflow.
 | `debug-with-ssh-only-jobs-matching` | str  | `.*`                     | Only start SSH session for jobs matching this regex pattern.
@@ -187,6 +189,7 @@ jobs:
       release-updatesite-branch: updatesite
       release-archive-name: org.haxe4e.plugin.updatesite.zip
 
+      debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
       debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
@@ -249,6 +252,7 @@ jobs:
       release-branch: release
       release-updatesite-branch: updatesite
 
+      debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
