@@ -112,7 +112,7 @@ jobs:
 | `compile-jdk`                       | str  | -                        | **REQUIRED** The JDK for compilation, either a major version (e.g. `11`, `17`) or vendor-qualified (`temurin@11`).
 | `test-jdks`                         | str  | -                        | A comma- or newline-separated list of additional JDKs to run unit tests against (e.g. `11,17` or `temurin@11`). Append `!` to allow failures for that JDK (e.g. `17!`).
 | **Maven:**
-| `maven-jdk`                         | str  | `temurin@21`             | The JDK used to run Maven itself, by major version or with vendor (e.g. `17` or `temurin@17`).
+| `maven-jdk`                         | str  | `temurin@25`             | The JDK used to run Maven itself, by major version or with vendor (e.g. `17` or `temurin@17`).
 | `maven-versions`                    | str  | -                        | A comma- or newline-separated list of Maven runtimes (e.g. `latest,3.6.1,mvnw`). Use `mvnw` to invoke `./mvnw`; otherwise specify a version or `latest`. Append `!` to allow failures (e.g. `3.6.3!`).
 | `extra-maven-args`                  | str  | -                        | Additional command-line flags to append to every Maven invocation (e.g. `-DskipTests`).
 | `maven-settings-file`               | str  | -                        | Path to a custom Maven `settings.xml`. If unset, the workflow uses [resources/maven/settings.xml](resources/maven/settings.xml)).
