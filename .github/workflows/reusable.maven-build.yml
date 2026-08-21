@@ -518,7 +518,7 @@ jobs:
         echo "Activating JDK [${{ matrix.MAVEN_JDK_VENDOR }}@${{ matrix.MAVEN_JDK_VERSION }}] for Maven..."
         JAVA_HOME="$(get_java_home "${{ matrix.MAVEN_JDK_VERSION }}" "${{ matrix.MAVEN_JDK_VENDOR }}")"
         if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-          echo "${JAVA_HOME}\\bin" >>"$GITHUB_PATH"
+          printf '%s\n' "${JAVA_HOME}\\bin" >>"$GITHUB_PATH"
         else
           echo "${JAVA_HOME}/bin" >>"$GITHUB_PATH"
         fi
@@ -568,7 +568,7 @@ jobs:
         else
           (set -x; mkdir -p "$RESTORED_MAVEN_REPO_PATH")
         fi
-        echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >>$GITHUB_OUTPUT
+        echo "REPO_PATH=$RESTORED_MAVEN_REPO_PATH" >>"$GITHUB_OUTPUT"
 
 
     - name: Get Certificate for JAR Signing
