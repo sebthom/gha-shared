@@ -297,9 +297,10 @@ jobs:
         for runner_idx, (runner_label, runner_allow_failure) in enumerate(runners):
             for mvn_idx, (mvn_version, mvn_allow_failure) in enumerate(mvn_versions):
                 can_create_release = (
-                    on_dev_branch if runner_idx == 0
-                    and mvn_idx == 0 else False 
-                    and ENV['DISABLE_RELEASES'] != 'true'
+                    on_dev_branch
+                    and runner_idx == 0
+                    and mvn_idx == 0
+                    and ENV["DISABLE_RELEASES"] != "true"
                 )
                 if can_create_release:
                     concurrency_group = f"{ENV['GITHUB_WORKFLOW']}-release"
