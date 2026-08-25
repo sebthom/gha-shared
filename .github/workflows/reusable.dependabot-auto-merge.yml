@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: © Sebastian Thomschke
+# SPDX-FileContributor: Sebastian Thomschke (https://sebthom.de/)
+# SPDX-License-Identifier: MIT
+# SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
+#
+# Registers GitHub native auto-merge for eligible Dependabot pull requests while required validation is pending.
+#
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+name: Dependabot Auto-Merge
+
+on:
+  workflow_call:
+    inputs:
+      package-ecosystems:
+        description: 'JSON array of Dependabot package ecosystems eligible for merging; use ["*"] for all or [] for none'
+        default: '["*"]'
+        type: string
+      merge-method:
+        description: "Merge method for eligible Dependabot PRs; supported values are 'squash' and 'rebase'"
+        default: squash
+        type: string
+      merge-major-updates:
+        description: "Whether major Dependabot updates are eligible for merging"
+        default: false
+        type: boolean
+
+jobs:
+  dependabot-pr-auto-merge:
+    # A required validation job must depend on this attempt. This deterministic ordering ensures validation cannot
+    # finish first, while branch protection still gates the final merge.
+    # Keep this author guard even though embedded callers prefilter; standalone callers need their own boundary.
+    # The PR author remains stable across reruns; github.actor only identifies who initiated a particular run.
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      # NOTE: GitHub's backend has been observed requiring Actions write for enablePullRequestAutoMerge when a PR
+      # updates a workflow file, although this is not documented as a substitute for the Workflows permission.
+      # Reconsider if GitHub documents or removes this behavior: https://github.com/cli/cli/issues/11493
+      actions: write
+      # GitHub's documented Dependabot auto-merge example grants these two scopes to the registration token.
+      # https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions#enabling-automerge-on-a-pull-request
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      # https://github.com/step-security/harden-runner#getting-started
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+      with:
+        egress-policy: audit
+
+
+    - name: Dependabot metadata
+      id: METADATA
+      # https://github.com/dependabot/fetch-metadata
+      uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      with:
+        github-token: "${{ github.token }}"
+
+
+    - name: Normalize Dependabot package ecosystem
+      id: ECOSYSTEM
+      env:
+        RAW_PACKAGE_ECOSYSTEM: ${{steps.METADATA.outputs.package-ecosystem}}
+      run: |
+        # fetch-metadata derives this output from Dependabot's branch prefix, which uses internal package-manager
+        # slugs. Convert the aliases to the public package-ecosystem values accepted by dependabot.yml and this input.
+        case "$RAW_PACKAGE_ECOSYSTEM" in
+          docker_compose) package_ecosystem=docker-compose ;;
+          dotnet_sdk) package_ecosystem=dotnet-sdk ;;
+          git_submodules) package_ecosystem=gitsubmodule ;;
+          github_actions) package_ecosystem=github-actions ;;
+          go_modules) package_ecosystem=gomod ;;
+          hex) package_ecosystem=mix ;;
+          npm_and_yarn) package_ecosystem=npm ;;
+          pre_commit) package_ecosystem=pre-commit ;;
+          rust_toolchain) package_ecosystem=rust-toolchain ;;
+          *) package_ecosystem=$RAW_PACKAGE_ECOSYSTEM ;;
+        esac
+        printf 'name=%s\n' "$package_ecosystem" >>"$GITHUB_OUTPUT"
+
+
+    - name: Enable auto-merge for eligible Dependabot PR
+      # A JSON array keeps ecosystem matching exact without parsing an ambiguous comma-separated string.
+      # The explicit `["*"]` default means all ecosystems, while an empty array naturally matches none.
+      # Match the normalized public ecosystem name so callers can copy values directly from dependabot.yml.
+      # Major updates remain opt-in because semantic-versioning major releases can contain breaking changes.
+      if: >-
+        ${{
+          (contains(fromJSON(inputs.package-ecosystems), '*') ||
+           contains(fromJSON(inputs.package-ecosystems), steps.ECOSYSTEM.outputs.name)) &&
+          (steps.METADATA.outputs.update-type == 'version-update:semver-minor' ||
+           steps.METADATA.outputs.update-type == 'version-update:semver-patch' ||
+           (inputs.merge-major-updates &&
+            steps.METADATA.outputs.update-type == 'version-update:semver-major'))
+        }}
+      env:
+        PR_NODE_ID: ${{github.event.pull_request.node_id}}
+        PR_HEAD_SHA: ${{github.event.pull_request.head.sha}}
+        MERGE_METHOD: ${{inputs.merge-method}}
+        GITHUB_TOKEN: ${{github.token}}
+      run: |
+        # workflow_call string inputs cannot restrict values, so validate before using the selected merge method.
+        case "$MERGE_METHOD" in
+          squash) graphql_merge_method=SQUASH ;;
+          rebase) graphql_merge_method=REBASE ;;
+          *)
+            echo "Unsupported Dependabot merge method: $MERGE_METHOD" >&2
+            exit 1
+            ;;
+        esac
+
+        # Use the enable-only mutation so a missing required check fails instead of merging immediately.
+        # The caller's validation check must be required and still pending while this job runs. GitHub owns the
+        # eventual merge after every branch requirement succeeds, including coordination across concurrent PRs.
+        # expectedHeadOid rejects registration if Dependabot changes the PR head before this mutation.
+        # GraphQL variables must remain literal in the query; gh substitutes them from the raw-field values.
+        # shellcheck disable=SC2016
+        gh api graphql \
+          --raw-field query='mutation EnablePullRequestAutoMerge(
+            $pullRequestId: ID!
+            $mergeMethod: PullRequestMergeMethod!
+            $expectedHeadOid: GitObjectID!
+          ) {
+            enablePullRequestAutoMerge(input: {
+              pullRequestId: $pullRequestId
+              mergeMethod: $mergeMethod
+              expectedHeadOid: $expectedHeadOid
+            }) {
+              pullRequest {
+                id
+              }
+            }
+          }' \
+          --raw-field pullRequestId="$PR_NODE_ID" \
+          --raw-field mergeMethod="$graphql_merge_method" \
+          --raw-field expectedHeadOid="$PR_HEAD_SHA"

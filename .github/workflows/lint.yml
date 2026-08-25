@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
+# Validates workflow syntax and regression-tests embedded workflow logic.
+#
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 
 name: Lint workflows
@@ -11,9 +13,11 @@ on:
   push:
     paths:
     - ".github/workflows/**"
+    - "tests/dependabot-auto-merge.sh"
   pull_request:
     paths:
     - ".github/workflows/**"
+    - "tests/dependabot-auto-merge.sh"
   workflow_dispatch:
 
 permissions:
@@ -37,3 +41,6 @@ jobs:
       uses: docker://rhysd/actionlint:latest
       with:
         args: -color
+
+    - name: Test Dependabot auto-merge routing
+      run: bash tests/dependabot-auto-merge.sh

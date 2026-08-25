@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
+# Reusable workflow for building, testing, and releasing Maven projects.
+#
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 name: Maven Build
 
@@ -26,10 +28,9 @@ on:
         description: "Merge method for eligible Dependabot PRs; supported values are 'squash' and 'rebase'"
         default: squash
         type: string
-      dependabot-use-auto-merge:
-        description: "Whether eligible Dependabot PRs should wait for branch requirements by using GitHub auto-merge"
-        # Preserve existing protected-branch behavior; callers without protected rules opt out explicitly.
-        default: true
+      dependabot-merge-major-updates:
+        description: "Whether major Dependabot updates are eligible for merging"
+        default: false
         type: boolean
 
       compile-jdk:
@@ -381,11 +382,43 @@ jobs:
 
 
   ###########################################################
+  dependabot-pr-auto-merge:
+  ###########################################################
+    # Initialization must succeed before auto-merge can be armed.
+    # The build job waits for this attempt, so validation cannot finish before registration.
+    # Branch protection prevents GitHub from completing the merge until that validation succeeds.
+    needs: init
+
+    # Avoid invoking the nested workflow for unrelated runs. The called workflow repeats author filtering because
+    # standalone callers do not have this boundary.
+    if: ${{ needs.init.result == 'success' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
+
+    permissions:
+      # Forward the undocumented GraphQL workflow-file workaround; nested reusable workflows cannot elevate it.
+      # https://github.com/cli/cli/issues/11493
+      actions: write
+      contents: write
+      pull-requests: write
+
+    # Resolve the nested workflow from the same commit as this build workflow, including PR invocations.
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow
+    uses: ./.github/workflows/reusable.dependabot-auto-merge.yml
+    with:
+      # This build workflow owns Maven and GitHub Actions updates; standalone callers default to all ecosystems.
+      package-ecosystems: '["github-actions","maven"]'
+      merge-method: ${{ inputs.dependabot-merge-method }}
+      merge-major-updates: ${{ inputs.dependabot-merge-major-updates }}
+
+
+  ###########################################################
   build:
   ###########################################################
     runs-on: ${{ matrix.RUNS_ON }}  # https://github.com/actions/runner-images#available-images
     continue-on-error: ${{ matrix.ALLOW_FAILURE }}
-    needs: [ init ]
+    # Keep registration and validation in one dependency graph; independent workflows provide no ordering guarantee.
+    # A registration failure must not suppress validation, but a failed matrix initialization still must.
+    needs: [ init, dependabot-pr-auto-merge ]
+    if: ${{ !cancelled() && needs.init.result == 'success' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     strategy:
       fail-fast: false
@@ -866,70 +899,3 @@ jobs:
       with:
         name: "*"
         failOnError: false
-
-
-  ###########################################################
-  dependabot-pr-auto-merge:
-  ###########################################################
-    needs: build
-    if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
-    runs-on: ubuntu-latest
-
-    concurrency: dependabot-pr-auto-merge-${{ github.event.pull_request.number }}
-
-    permissions:
-      contents: write
-      pull-requests: write
-
-    steps:
-    - name: Harden the runner (Audit all outbound calls)
-      # https://github.com/step-security/harden-runner#getting-started
-      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
-      with:
-        egress-policy: audit
-
-
-    - name: Dependabot metadata
-      id: METADATA
-      # https://github.com/dependabot/fetch-metadata
-      uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-      with:
-        github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-
-    - name: Merge Dependabot PR
-      if: >-
-        ${{
-          (steps.METADATA.outputs.package-ecosystem == 'github-actions' ||
-           steps.METADATA.outputs.package-ecosystem == 'maven') &&
-          (steps.METADATA.outputs.update-type == 'version-update:semver-minor' ||
-           steps.METADATA.outputs.update-type == 'version-update:semver-patch')
-        }}
-      env:
-        PR_URL: ${{github.event.pull_request.html_url}}
-        PR_HEAD_SHA: ${{github.event.pull_request.head.sha}}
-        DEPENDABOT_MERGE_METHOD: ${{inputs.dependabot-merge-method}}
-        DEPENDABOT_USE_AUTO_MERGE: ${{inputs.dependabot-use-auto-merge}}
-        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-      run: |
-        # CI passed for a merge commit containing this head; a newer conflict-free base is allowed.
-        # Match the head commit so Dependabot cannot update the PR between that build and this merge.
-        # workflow_call string inputs cannot restrict values, so validate before forming a CLI argument.
-        case "$DEPENDABOT_MERGE_METHOD" in
-          squash) merge_method_flag=--squash ;;
-          rebase) merge_method_flag=--rebase ;;
-          *)
-            echo "Unsupported Dependabot merge method: $DEPENDABOT_MERGE_METHOD" >&2
-            exit 1
-            ;;
-        esac
-        merge_args=(
-          "$merge_method_flag"
-          --match-head-commit "$PR_HEAD_SHA"
-        )
-        # Protected branches may need `--auto` to wait for outstanding requirements, while branches
-        # without protection can reject enabling auto-merge. The caller knows which policy applies.
-        if [[ "$DEPENDABOT_USE_AUTO_MERGE" == "true" ]]; then
-          merge_args+=(--auto)
-        fi
-        gh pr merge "${merge_args[@]}" "$PR_URL"
