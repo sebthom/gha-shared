@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
-# Validates workflow syntax and regression-tests embedded workflow logic.
+# Validates workflow syntax and embedded merge routing, then merges eligible Dependabot updates.
 #
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 
-name: Lint workflows
+name: Build
 
 on:
   push:
@@ -44,3 +44,26 @@ jobs:
 
     - name: Test Dependabot auto-merge routing
       run: bash tests/dependabot-auto-merge.sh
+
+
+  dependabot-pr-auto-merge:
+    # Merge only after workflow linting and routing regression tests succeed for this Dependabot PR.
+    needs: actionlint
+
+    # The called workflow repeats these checks because standalone callers need the same trust boundary.
+    # Check both the actor and PR author so this write-capable job only runs for Dependabot updates.
+    # Manual reruns keep the original actor and remain allowed.
+    if: >-
+      needs.actionlint.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    # Use the published revision so the merge implementation is not resolved from this pull request.
+    uses: sebthom/gha-shared/.github/workflows/reusable.dependabot-auto-merge.yml@v1
+    with:
+      package-ecosystems: '["github-actions"]'

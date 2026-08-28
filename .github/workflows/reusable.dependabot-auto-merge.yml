@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
-# Registers GitHub native auto-merge for eligible Dependabot pull requests while required validation is pending.
+# Merges eligible Dependabot pull requests after the caller's validation job succeeds.
 #
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 name: Dependabot Auto-Merge
@@ -23,23 +23,26 @@ on:
         description: "Whether major Dependabot updates are eligible for merging"
         default: false
         type: boolean
+      github-app-client-id:
+        description: "Optional GitHub App client ID used with the private-key secret for workflow-file merge permission"
+        default: ""
+        type: string
+
+    secrets:
+      DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY:
+        description: "Optional GitHub App private key; configure it as a Dependabot secret"
+        required: false
 
 jobs:
   dependabot-pr-auto-merge:
-    # A required validation job must depend on this attempt. This deterministic ordering ensures validation cannot
-    # finish first, while branch protection still gates the final merge.
-    # Keep this author guard even though embedded callers prefilter; standalone callers need their own boundary.
-    # The PR author remains stable across reruns; github.actor only identifies who initiated a particular run.
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
+    # The caller must make this reusable job depend on validation; this workflow owns only eligibility and merging.
+    # Require a Dependabot-authored PR and a Dependabot-initiated run before granting write permissions.
+    # A manual rerun keeps its original actor, but a human-generated PR event must not enter this job.
+    if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' }}
     runs-on: ubuntu-latest
 
     permissions:
-      # NOTE: GitHub's backend has been observed requiring Actions write for enablePullRequestAutoMerge when a PR
-      # updates a workflow file, although this is not documented as a substitute for the Workflows permission.
-      # Reconsider if GitHub documents or removes this behavior: https://github.com/cli/cli/issues/11493
-      actions: write
-      # GitHub's documented Dependabot auto-merge example grants these two scopes to the registration token.
-      # https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions#enabling-automerge-on-a-pull-request
+      # These scopes support the credential-free path. A configured App token replaces github.token for the merge.
       contents: write
       pull-requests: write
 
@@ -81,7 +84,43 @@ jobs:
         printf 'name=%s\n' "$package_ecosystem" >>"$GITHUB_OUTPUT"
 
 
-    - name: Enable auto-merge for eligible Dependabot PR
+    - name: Validate GitHub App configuration
+      id: APP_AUTH
+      env:
+        GITHUB_APP_CLIENT_ID: ${{inputs.github-app-client-id}}
+        GITHUB_APP_PRIVATE_KEY: ${{secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY}}
+      run: |
+        # Treat the credentials as one optional unit. Falling back on partial configuration would hide a typo and
+        # reintroduce the workflow-file permission failure that the App is intended to prevent.
+        if [[ -z "$GITHUB_APP_CLIENT_ID" && -z "$GITHUB_APP_PRIVATE_KEY" ]]; then
+          printf 'enabled=false\n' >>"$GITHUB_OUTPUT"
+        elif [[ -n "$GITHUB_APP_CLIENT_ID" && -n "$GITHUB_APP_PRIVATE_KEY" ]]; then
+          printf 'enabled=true\n' >>"$GITHUB_OUTPUT"
+        else
+          echo "GitHub App client ID and private key must be configured together." >&2
+          exit 1
+        fi
+
+
+    - name: Create GitHub App token
+      id: APP_TOKEN
+      if: steps.APP_AUTH.outputs.enabled == 'true'
+      # Confine the persistent private key to a pinned action in this merge-only job. Callers must reference a
+      # trusted published workflow revision instead of a same-repository workflow selected by pull request code.
+      # The App token adds the Workflows permission named by concurrent workflow-file merge failures.
+      # The merge endpoint uses Contents, while metadata above keeps using github.token, so this token does not
+      # need Pull requests permission.
+      # Observed failure: https://github.com/vegardit/docker-graalvm-maven/pull/60
+      # Concurrent merge that changed the base first: https://github.com/vegardit/docker-graalvm-maven/pull/63
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{inputs.github-app-client-id}}
+        private-key: ${{secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY}}
+        permission-contents: write
+        permission-workflows: write
+
+
+    - name: Merge eligible Dependabot PR
       # A JSON array keeps ecosystem matching exact without parsing an ambiguous comma-separated string.
       # The explicit `["*"]` default means all ecosystems, while an empty array naturally matches none.
       # Match the normalized public ecosystem name so callers can copy values directly from dependabot.yml.
@@ -96,43 +135,30 @@ jobs:
             steps.METADATA.outputs.update-type == 'version-update:semver-major'))
         }}
       env:
-        PR_NODE_ID: ${{github.event.pull_request.node_id}}
+        PR_NUMBER: ${{github.event.pull_request.number}}
         PR_HEAD_SHA: ${{github.event.pull_request.head.sha}}
         MERGE_METHOD: ${{inputs.merge-method}}
-        GITHUB_TOKEN: ${{github.token}}
+        # App authentication is optional so existing callers retain the simpler credential-free behavior.
+        GH_TOKEN: ${{steps.APP_TOKEN.outputs.token || github.token}}
       run: |
         # workflow_call string inputs cannot restrict values, so validate before using the selected merge method.
         case "$MERGE_METHOD" in
-          squash) graphql_merge_method=SQUASH ;;
-          rebase) graphql_merge_method=REBASE ;;
+          squash | rebase) ;;
           *)
             echo "Unsupported Dependabot merge method: $MERGE_METHOD" >&2
             exit 1
             ;;
         esac
 
-        # Use the enable-only mutation so a missing required check fails instead of merging immediately.
-        # The caller's validation check must be required and still pending while this job runs. GitHub owns the
-        # eventual merge after every branch requirement succeeds, including coordination across concurrent PRs.
-        # expectedHeadOid rejects registration if Dependabot changes the PR head before this mutation.
-        # GraphQL variables must remain literal in the query; gh substitutes them from the raw-field values.
-        # shellcheck disable=SC2016
-        gh api graphql \
-          --raw-field query='mutation EnablePullRequestAutoMerge(
-            $pullRequestId: ID!
-            $mergeMethod: PullRequestMergeMethod!
-            $expectedHeadOid: GitObjectID!
-          ) {
-            enablePullRequestAutoMerge(input: {
-              pullRequestId: $pullRequestId
-              mergeMethod: $mergeMethod
-              expectedHeadOid: $expectedHeadOid
-            }) {
-              pullRequest {
-                id
-              }
-            }
-          }' \
-          --raw-field pullRequestId="$PR_NODE_ID" \
-          --raw-field mergeMethod="$graphql_merge_method" \
-          --raw-field expectedHeadOid="$PR_HEAD_SHA"
+        # The caller has already validated this head. Pinning `sha` rejects a later Dependabot force-push while
+        # intentionally allowing GitHub to merge against a newer conflict-free base commit.
+        merged=$(gh api \
+          --method PUT \
+          "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/merge" \
+          --raw-field sha="$PR_HEAD_SHA" \
+          --raw-field merge_method="$MERGE_METHOD" \
+          --jq '.merged')
+        if [[ $merged != true ]]; then
+          echo "GitHub did not merge Dependabot PR #$PR_NUMBER." >&2
+          exit 1
+        fi

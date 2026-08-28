@@ -2,74 +2,345 @@
 
 # Dependabot auto-merge design history
 
-This document explains why
+This document explains the design of
 [`reusable.dependabot-auto-merge.yml`](reusable.dependabot-auto-merge.yml)
-uses GitHub native auto-merge and why several apparently simpler alternatives were removed.
-It is a record of experiments and observed failures, not the usage guide.
-See the [repository README](../../README.md#reusable-workflow-dependabot-auto-merge) for current setup instructions.
+and records the alternatives that were tested.
+It is not the primary usage guide.
+See the [repository README](../../README.md#reusable-workflow-dependabot-auto-merge) for setup instructions.
 
-GitHub has changed Actions concurrency and merge APIs over time.
+GitHub changes Actions and merge behavior over time.
 The linked GitHub documentation is the source of truth if platform behavior changes after this document was written.
 
-## Goals and constraints
+## Goals and accepted tradeoffs
 
 The workflow should:
 
-- merge only eligible Dependabot pull requests;
-- reject registration if the selected pull request head changes between the decision and registration;
-- never bypass required build and test checks;
-- handle several Dependabot pull requests without losing queued work;
-- merge updates to `.github/workflows/**` without special handling where possible;
-- avoid a GitHub App, private key, and repository-specific credentials where possible; and
-- fail with the pull request still open when repository configuration is incomplete.
+- merge only eligible Dependabot pull requests after the caller's validation succeeds;
+- reject the merge if Dependabot changed the pull request head after validation;
+- use the built-in `github.token` without extra credentials for the common case;
+- offer a permission-complete path for workflow-file updates;
+- avoid branch protection and repository auto-merge as requirements; and
+- leave the pull request open when a merge cannot be performed.
 
-The difficult part was not recognizing Dependabot or selecting semantic-version updates.
-It was choosing when and how to request a merge while GitHub was simultaneously evaluating required checks,
-other pull requests, branch protection, token permissions, and workflow-file restrictions.
+The REST `sha` field pins the validated pull request head.
+It does not pin the target branch.
+A newer, conflict-free target branch may therefore be included in the final merge.
+That is an intentional tradeoff for this workflow.
+
+## The blocking issue
+
+The recurring blocker that invalidated otherwise-working designs was not ordinary dependency auto-merge.
+It was this specific combination:
+
+1. Dependabot opens two or more pull requests at the same time.
+1. More than one pull request modifies a file under `.github/workflows/**`.
+1. One pull request merges and changes the target branch while another validated pull request is still waiting to merge.
+1. GitHub must merge the remaining Dependabot head with a target branch that now contains a different workflow-file change.
+
+With the built-in `github.token`, the remaining merge can be rejected with:
+
+~~~text
+auto-merge was automatically disabled
+Tried to create or update workflow without `workflows` permission
+~~~
+
+This exact sequence occurred when
+[`docker-graalvm-maven#63`](https://github.com/vegardit/docker-graalvm-maven/pull/63)
+merged while
+[`docker-graalvm-maven#60`](https://github.com/vegardit/docker-graalvm-maven/pull/60)
+was also passing CI.
+Both pull requests modified `.github/workflows/build.yml`.
+GitHub then disabled native auto-merge for the remaining pull request.
+
+The first pull request often succeeds.
+The later pull request is the important case because its final result combines its Dependabot head with a target
+branch whose workflow file changed in the meantime.
+GitHub does not document the exact internal distinction, so that explanation is an inference from the repeatable
+first-succeeds/later-fails behavior and the reported permission error.
+
+This limitation appeared across direct REST merge and native auto-merge experiments.
+Branch protection, required status checks, repository auto-merge, job concurrency, and `actions: write` did not
+grant the missing GitHub App **Workflows** repository permission.
+They could change merge timing, but they did not remove this trust boundary.
+
+There are now two supported authentication modes:
+
+- The built-in token remains the credential-free default.
+  If the concurrent workflow-file case occurs, comment `@dependabot rebase` on the remaining pull request.
+- A custom GitHub App is the optional permission-complete path.
+  Its short-lived installation token explicitly requests **Workflows: write** in addition to
+  **Contents: write**.
+
+The App path follows GitHub's documented permission model.
+It still needs a live downstream test with concurrent workflow-file pull requests before it should be considered
+empirically verified in every repository configuration.
 
 ## Current design
 
-The current design registers native auto-merge before at least one required validation job starts:
+The caller validates first and invokes the reusable merge workflow only after validation succeeds:
 
-```yaml
+~~~yaml
 jobs:
+  build:
+    # ...build and test steps...
+
   dependabot-auto-merge:
+    needs: build
+    if: ${{ needs.build.result == 'success' && github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' }}
     permissions:
-      actions: write
       contents: write
       pull-requests: write
     uses: sebthom/gha-shared/.github/workflows/reusable.dependabot-auto-merge.yml@v1
+~~~
+
+A dependency on a matrix build waits for every matrix cell.
+No required status check, branch protection rule, or repository auto-merge setting is needed by this ordering.
+Existing branch rules still apply and may reject the direct merge.
+Protected branches are therefore supported only when every required check and approval is complete and any
+requirement that the branch be up to date is satisfied when the one-shot REST merge runs.
+The merge job should depend on every required validation job in the same workflow.
+Requirements reported by independent workflows cannot be expressed through `needs`; if one is still pending, the
+merge fails closed and must be rerun after that requirement succeeds.
+The embedded Maven and Eclipse callers wait for their build matrix only.
+App authentication supplies workflow-file permission but does not bypass branch rules unless the App is separately
+configured as a bypass actor.
+
+The reusable workflow repeats the event, actor, and author checks.
+That is intentional because the workflow can also be called directly instead of through one of the embedded build
+workflows.
+The actor check excludes human-generated events on an existing Dependabot pull request without blocking a manual
+rerun, which retains the original actor.
+
+[`dependabot/fetch-metadata`](https://github.com/dependabot/fetch-metadata#outputs)
+supplies the package ecosystem and semantic update type.
+The workflow normalizes metadata's internal ecosystem slugs to the public names used in
+`.github/dependabot.yml`.
+A grouped pull request uses the highest semantic-version change reported by the metadata action, so a group that
+contains a major update is eligible only when `merge-major-updates` is enabled.
+
+### Direct REST merge
+
+The workflow validates the selected merge method and calls GitHub's pull request merge endpoint:
+
+~~~bash
+merged=$(gh api \
+  --method PUT \
+  "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/merge" \
+  --raw-field sha="$PR_HEAD_SHA" \
+  --raw-field merge_method="$MERGE_METHOD" \
+  --jq '.merged')
+~~~
+
+Supplying `sha` prevents a later Dependabot force-push from being merged under an earlier CI result.
+The workflow fails if GitHub returns anything other than `merged: true`.
+
+See GitHub's
+[Merge a pull request REST documentation](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
+
+### Optional GitHub App token
+
+When both App credentials are supplied, the workflow creates a repository-scoped installation token:
+
+~~~yaml
+- uses: actions/create-github-app-token@<pinned-commit>
+  with:
+    client-id: ${{ inputs.github-app-client-id }}
+    private-key: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
+    permission-contents: write
+    permission-workflows: write
+~~~
+
+The App must be installed on the target repository.
+The private key must be stored as a Dependabot secret because Dependabot-triggered workflows do not receive
+ordinary Actions secrets.
+The workflow fails on partial App configuration instead of silently falling back to the built-in token.
+The private key must only be passed to a trusted published revision of this workflow.
+A same-repository `./.github/workflows/...` call resolves the called workflow from the caller's commit, so using that
+form from a pull request workflow would let pull request code select the secret-bearing workflow definition.
+The embedded public workflows are safe when consumers reference their published `sebthom/gha-shared@v1` revision:
+their nested local call resolves from that same trusted `gha-shared` revision.
+
+See GitHub's
+[GitHub App permission documentation](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
+and
+[Dependabot secret documentation](https://docs.github.com/en/code-security/reference/secret-security/secret-types#dependabot-secrets).
+
+## Approach comparison
+
+The **Concurrent workflow PRs** column is the deciding column.
+Several approaches work for pull requests that do not modify workflow files but do not solve the blocking case
+described above.
+The current workflow always uses the direct REST merge mechanism: row 3 is its default built-in-token mode, and
+row 4 is the same mechanism with optional GitHub App authentication.
+`workflows: write` is not a valid job `permissions` key for the built-in `github.token`.
+`actions: write` is a different permission and does not authorize workflow-file changes.
+The App mode exists because its installation token can explicitly request the separate Workflows repository
+permission.
+
+| Approach | Required configuration | PRs not modifying workflow files | Concurrent PRs modifying `.github/workflows/**` | Status
+| -------- | ---------------------- | ----------------------- | ------------------------------------------------ | --------
+| **1. `gh pr merge --auto` after validation** | Enable repository auto-merge and the selected merge method. Native registration also needs an unmet branch requirement. | Conditional. The CLI may register auto-merge or merge immediately depending on PR state. | **Fails with the built-in token.** The eventual workflow-file merge can still hit the Workflows permission boundary. | Rejected because it does not provide a registration-only contract and does not solve the blocker.
+| **2. Caller-selected auto or direct merge** | Expose a mode input and configure either native auto-merge or direct-merge permissions. | Works when each caller selects the correct mode. | **Fails with the built-in token.** Both final merge paths retain the same workflow-file restriction. | Rejected because it exposes two timing and failure contracts without solving the blocker.
+| **3. Current REST merge - built-in token (default)** | Allow the selected merge method. Grant `contents: write` and `pull-requests: write`. No branch protection or auto-merge setting is required. | **Works after validation.** | **Known limitation.** After another workflow-file PR merges, GitHub can reject this token for missing Workflows permission. Manual `@dependabot rebase` is the recovery path. | **Selected as the credential-free default.**
+| **4. Current REST merge - GitHub App token (optional)** | Install an App. Provide its client ID and Dependabot-secret private key. Grant Contents and Workflows write permissions. | **Works after validation.** | **Expected to work.** The App token explicitly requests Workflows write permission; concurrent downstream verification is still pending. | **Selected as the optional permission-complete mode.**
+| **5. Protected-branch routing** | Detect target-branch protection and maintain both GraphQL and REST implementations. | Conditional on correct detection, timing, and repository settings. | **Does not solve the blocker.** Both routes eventually ask GitHub to merge the workflow update. | Rejected because it adds two APIs and two failure models without removing the trust boundary.
+| **6. Native GraphQL auto-merge** | Enable repository auto-merge and the selected merge method. Configure an unmet branch requirement and deterministic registration ordering. | **Works when registration is accepted.** | **Failed in the observed concurrent case.** GitHub registered auto-merge, then disabled it for the remaining PR after the first workflow update merged. | Rejected as the default because branch protection added configuration but did not solve the blocker.
+| **7. Concurrency groups** | Configure per-PR or repository-wide concurrency; a bounded repository queue of up to 100 pending runs needs `queue: max`. | Can control when merge jobs run. | **Does not grant Workflows permission.** Native final merges happen after registration jobs end, and serialized REST jobs still use the same underprivileged token. | Rejected as a permission workaround.
+| **8. `open-pull-requests-limit: 1`** | Add the limit to every relevant `dependabot.yml` update entry. | Reduces overlap inside one update configuration. | Mitigates but does not eliminate overlap across ecosystems or update configurations. It also delays update discovery. | Rejected as a repository-by-repository throttle.
+| **9. Rerun, rebase, or recreate** | Manual action on the affected PR. | Useful recovery. | `@dependabot rebase` can regenerate the remaining head against the updated target branch and allow a new validated merge attempt. A rerun alone does not add permission. | Retained as recovery for the built-in-token mode, not as automatic coordination.
+
+## Detailed history
+
+### 1. `gh pr merge --auto` after validation
+
+The first implementation waited for the build and used GitHub CLI:
+
+~~~bash
+gh pr merge \
+  --auto \
+  --match-head-commit "$PR_HEAD_SHA" \
+  --squash \
+  "$PR_URL"
+~~~
+
+This was compact and used a supported CLI command.
+However, `--auto` is not an enable-only operation.
+If no branch requirement is pending when the command runs, GitHub can merge immediately instead of only
+registering future intent.
+If native auto-merge is unavailable, it can fail for repository-state reasons unrelated to validation.
+
+Most importantly, the eventual merge still uses the built-in token's authorization context.
+The later native GraphQL experiment proved that successful registration did not prevent the concurrent
+workflow-file failure.
+
+See the [`gh pr merge` manual](https://cli.github.com/manual/gh_pr_merge).
+
+### 2. Caller-selected auto-merge or direct merge
+
+A later version exposed a `dependabot-use-auto-merge` input:
+
+~~~bash
+merge_args=(
+  "$merge_method_flag"
+  --match-head-commit "$PR_HEAD_SHA"
+)
+if [[ "$DEPENDABOT_USE_AUTO_MERGE" == "true" ]]; then
+  merge_args+=(--auto)
+fi
+gh pr merge "${merge_args[@]}" "$PR_URL"
+~~~
+
+This supported protected and unprotected repositories.
+It also required every caller to understand two different contracts:
+
+- auto mode depended on repository auto-merge and an unmet branch requirement;
+- direct mode merged immediately after CI.
+
+Both paths retained the workflow-file permission problem.
+The mode input was therefore configuration without a solution to the core blocker.
+
+### 3. Current REST merge with the built-in token
+
+The REST endpoint is explicit, supports squash and rebase, and accepts the tested head SHA.
+It does not require repository auto-merge or branch protection.
+This is now the default because it provides the smallest setup for the common case and matches the accepted
+target-branch tradeoff.
+
+Its limitation is also explicit.
+The built-in `github.token` cannot request the GitHub App **Workflows** repository permission through a workflow
+`permissions` block.
+Adding this does not help:
+
+~~~yaml
+permissions:
+  actions: write
+~~~
+
+`actions: write` controls Actions resources, such as workflow runs and caches.
+It is not the GitHub App permission to create or update files under `.github/workflows/**`.
+
+Typical REST failure:
+
+~~~text
+gh: refusing to allow a GitHub App to create or update workflow
+`.github/workflows/build.yml` without `workflows` permission (HTTP 403)
+~~~
+
+See GitHub's
+[workflow `permissions` reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
+and
+[GitHub App permission guidance](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
+
+### 4. Current REST merge with a custom GitHub App
+
+The App path was retained as an option instead of making credentials mandatory for every repository.
+It requests the Workflows permission needed for workflow-file changes plus the Contents permission required by
+the merge endpoint.
+
+Benefits:
+
+- short-lived installation token;
+- repository-scoped by the token action;
+- no long-lived personal access token; and
+- explicit permission for workflow-file updates.
+
+Costs:
+
+- App creation and installation in every target repository;
+- client ID configuration;
+- private-key storage and rotation; and
+- a larger credential trust boundary than the built-in token.
+
+The App token action revokes the token when the job finishes by default.
+Because the workflow is triggered by Dependabot, the private key must be a Dependabot secret.
+
+### 5. Protected-branch routing
+
+One version inspected the target branch's protection state and chose GraphQL for protected branches or REST for
+unprotected branches.
+That appeared to offer automatic configuration detection.
+
+It did not answer the important question.
+A protected flag does not prove that native auto-merge is enabled or that an unmet requirement exists.
+The REST route still lacked Workflows permission, and the GraphQL route still left the final merge to the same
+platform authorization behavior.
+Maintaining both APIs made errors harder to diagnose without solving the concurrent workflow-file case.
+
+### 6. Native GraphQL auto-merge
+
+Two orderings were tested.
+
+Registration after validation could fail because the PR was already immediately mergeable:
+
+~~~text
+gh: Auto merge is not allowed for this repository
+~~~
+
+~~~text
+gh: Pull request Pull request is in unstable status
+~~~
+
+Making the registration check itself required kept an unmet check pending, but it created a self-referential
+branch rule.
+Skipped or renamed reusable-workflow checks could then leave human PRs waiting for a status that was never
+reported.
+See [Community discussion #72708](https://github.com/orgs/community/discussions/72708).
+
+Registration before validation used deterministic job ordering:
+
+~~~yaml
+jobs:
+  dependabot-auto-merge:
+    # ...enable-only GraphQL mutation...
 
   build:
     needs: dependabot-auto-merge
     if: ${{ !cancelled() }}
-    # ...required build and test steps...
-```
+~~~
 
-Dependabot-triggered `pull_request` runs receive a read-only `github.token` by default,
-but GitHub honors explicit workflow and job permissions for those runs.
-A called reusable workflow can only maintain or reduce the permissions granted by its caller,
-so the calling job must grant all three scopes shown above.
-GitHub's documented Dependabot example grants `contents: write` and `pull-requests: write`.
-The additional `actions: write` permission is an empirical compatibility workaround:
-GitHub's backend has rejected `enablePullRequestAutoMerge` for workflow-file updates without the separate
-**Workflows** permission, while public reports show the same mutation succeeding after `actions: write` was added.
-GitHub does not document `actions: write` as a substitute for **Workflows**, so this behavior is not a stable
-permission contract.
-See [GitHub CLI issue #11493](https://github.com/cli/cli/issues/11493) and the successful workflow-file update in
-[open-contracting/kestrel#8](https://github.com/open-contracting/kestrel/pull/8).
-This lets the workflow use the built-in token without a PAT or custom GitHub App.
-See [GitHub's Dependabot permissions change](https://github.blog/changelog/2021-10-06-github-actions-workflows-triggered-by-dependabot-prs-will-respect-permissions-key-in-workflows/)
-and [the reusable-workflow permission rules](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#supported-keywords-for-jobs-that-call-a-reusable-workflow).
+The enable-only mutation pinned registration to the then-current PR head:
 
-[`dependabot/fetch-metadata`](https://github.com/dependabot/fetch-metadata#outputs)
-reports `update-type` as the highest SemVer change in the pull request.
-A grouped pull request containing a major update is therefore eligible only when `merge-major-updates` is enabled,
-even if the group also contains minor or patch updates.
-
-The reusable workflow calls the enable-only GraphQL mutation and pins the registration to the current PR head:
-
-```bash
+~~~bash
 gh api graphql \
   --raw-field query='mutation EnablePullRequestAutoMerge(
     $pullRequestId: ID!
@@ -85,404 +356,65 @@ gh api graphql \
     }
   }' \
   --raw-field pullRequestId="$PR_NODE_ID" \
-  --raw-field mergeMethod="$graphql_merge_method" \
+  --raw-field mergeMethod="$GRAPHQL_MERGE_METHOD" \
   --raw-field expectedHeadOid="$PR_HEAD_SHA"
-```
-
-At least one required validation job depends on registration.
-This dependency guarantees that validation cannot finish before registration is attempted;
-it does not rely on the scheduling order or relative duration of independent workflows.
-A required branch condition is therefore still unsatisfied when GitHub evaluates auto-merge.
-After registration, GitHub waits for all branch requirements and coordinates the final merge.
-The dependent validation job uses `!cancelled()` so a registration error remains visible but does not suppress CI.
-
-Calling registration and validation from independently triggered workflows does not provide this ordering guarantee.
-Registration can then run after a fast build and be rejected if the pull request has already become immediately
-mergeable.
-For deterministic behavior, put both jobs in the same workflow and make validation depend on registration.
-
-### Advantages
-
-- GitHub owns waiting, final merge timing, and coordination between concurrent PRs.
-- The workflow has no immediate REST fallback; a registration failure leaves the PR open.
-- `expectedHeadOid` rejects registration if Dependabot updates the PR head first.
-- No direct REST merge or custom merge queue is required.
-- No PAT, GitHub App installation, client ID, or private key is required.
-- Missing branch protection or auto-merge configuration fails closed.
-
-### Costs and limitations
-
-- The repository must enable auto-merge and the selected merge method.
-- The target branch must have at least one required validation check.
-- At least one required validation job starts only after the short registration job has completed or failed.
-- Registration is attempted once per workflow run.
-  If GitHub rejects it, rerun the workflow or update the PR as described in
-  [the recovery section](#9-retry-rerun-rebase-or-recreate).
-- Strict up-to-date branch rules can require another Dependabot rebase and CI run after another PR merges.
-- Merge queues are not supported because GitHub documents that the built-in `GITHUB_TOKEN` cannot add a
-  Dependabot PR to a merge queue.
-- A repository that intentionally has no branch requirements cannot use this workflow as a direct-merge substitute.
-- GitHub does not document the `actions: write` workaround for workflow-file updates.
-  If the backend rejects registration despite that permission, the workflow fails closed and a token with the
-  separate **Workflows** permission is still required.
-
-Relevant GitHub documentation:
-
-- [Automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
-- [Automatically merging a pull request](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request)
-- [`enablePullRequestAutoMerge` GraphQL mutation](https://docs.github.com/en/graphql/reference/pulls#enablepullrequestautomerge)
-- [Required status checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
-
-## Approaches evaluated
-
-The first matrix compares merge mechanisms.
-The second matrix covers scheduling and recovery measures that can support a mechanism but cannot replace one.
-"Conditional" means the approach works only under the limitation stated in the cell.
-
-### Merge-mechanism comparison
-
-| Approach | Required configuration | Protected branch with required checks | Branch without required checks | PR changes `.github/workflows/**` | Concurrent PRs | Decision
-| -------- | ---------------------- | ------------------------------------- | ------------------------------ | -------------------------------- | -------------- | --------
-| **Current: Ordered GraphQL registration before validation** | Enable repository auto-merge and the selected merge method. Make at least one required validation job depend on registration and use `if: ${{ !cancelled() }}`. Grant the caller `actions: write`, `contents: write`, and `pull-requests: write`. | **Works.** GitHub waits for validation after registration. | **Fails closed.** The enable-only mutation is rejected because there is no unmet branch requirement. | **Conditional.** The backend can reject GraphQL registration with the workflow-file permission error. Public examples succeeded after granting `actions: write`, but GitHub does not document that behavior. | **Conditional.** GitHub coordinates final merges, but strict up-to-date checks can require Dependabot to update a remaining PR and CI to run again. | **Selected.** One fail-closed contract with deterministic registration-before-validation ordering.
-| **1.** `gh pr merge --auto` after validation | Enable repository auto-merge and the selected merge method. Grant the caller write permissions. | **Conditional.** With no unmet requirement, the CLI may proceed with the merge instead of only registering intent. | **Conditional.** It may merge immediately or auto-merge registration may be unavailable. | **Conditional.** An immediate merge can cross the workflow-file permission boundary. | **Conditional.** Immediate merge attempts can expose base-branch races. | Rejected because it does not provide a registration-only contract.
-| **2.** Caller-selected auto-merge or immediate merge | Configure a per-caller mode flag. The auto route needs native auto-merge and required checks; the direct route needs write permissions. | **Works** when the caller selects native auto-merge. | **Works** when the caller selects direct merge. | **Conditional.** The direct route can fail with the workflow-file permission error. | **Conditional.** The direct route retains concurrent-merge races. | Rejected because callers had to understand and preserve two different safety contracts.
-| **3.** Direct REST merge with `GITHUB_TOKEN` | Allow the selected merge method. Grant the caller `contents: write` and `pull-requests: write`. Native auto-merge is not required. | **Works after validation** if branch policy permits the token to merge. | **Works after validation.** | **Fails in the observed case.** The built-in token lacked the GitHub App **Workflows** permission. | **Conditional.** The expected head protects the PR head, but simultaneous merges can change the base branch. | Rejected because the workflow owns the final merge and hits the workflow-file trust boundary.
-| **4.** Direct REST merge with a custom GitHub App token | Install an App and provide its client ID and private key as Dependabot-accessible configuration. Grant App contents, pull-request, and workflow permissions. | **Works after validation** when App and branch policy permit it. | **Works after validation.** | **Conditional.** The App can request the missing permission, but GitHub reports restrictions in some scenarios. | **Conditional.** The App does not remove base-branch races between direct merge attempts. | Rejected because of credential management, a larger trust boundary, and remaining platform edge cases.
-| **5.** Protected-branch routing between GraphQL and REST | Configure both native auto-merge and direct-merge permissions. The workflow must inspect the target branch and maintain both implementations. | **Works** through GraphQL when registration is still possible. | **Works** through REST. | **Conditional.** GraphQL registration and the direct REST merge can both hit workflow-file permission checks. | **Conditional.** The REST route retains direct-merge races. | Rejected because one workflow exposed two timing, permission, and failure models.
-| **6.** GraphQL registration after validation with registration itself required | Enable native auto-merge. Configure the exact generated registration check as required in addition to validation. | **Conditional.** It works only while the correctly named registration check is pending. | **Not applicable.** The workaround creates a required branch condition. | **Conditional.** Registration can hit the same workflow-file permission check as the current GraphQL design. | **Works after registration.** | Rejected because skipped or renamed reusable-workflow checks can leave PRs permanently waiting.
-
-### Coordination and recovery comparison
-
-| Measure | Required configuration | What it helps | What it does not solve | Decision
-| ------- | ---------------------- | ------------- | ---------------------- | --------
-| **Independent workflow registration** | Trigger GraphQL registration separately from validation, using the same repository settings and caller permissions as the current design. | Can register native auto-merge when at least one required validation condition is still pending. | Independent scheduling cannot guarantee registration runs first. Strict up-to-date checks can still require Dependabot to update a remaining PR and CI to run again. | Not recommended when deterministic registration-before-validation ordering is required.
-| **7a.** Repository-wide concurrency group with the default single pending slot | Add one repository-wide `concurrency.group` and set `cancel-in-progress: false`. | Serializes the running merge job. | A newer queued run replaces the older pending run. It does not fix API permissions or merge semantics. | Rejected because Dependabot bursts can lose intermediate jobs.
-| **7b.** Per-PR concurrency group | Include the PR number in `concurrency.group`. | Prevents one PR from replacing another PR's pending job. | Different PRs still merge concurrently, so it does not serialize direct merge attempts. | Unnecessary for native registration; useful only for deduplicating runs of the same PR.
-| **7c.** Repository-wide `queue: max` | Add `concurrency.queue: max`; configure actionlint while version 1.7.12 lacks support. | Serializes jobs and retains up to 100 pending runs. | It does not fix workflow-file permissions or unsafe direct-merge behavior, and it delays independent PRs. | Rejected because GitHub already coordinates native final merges.
-| **8.** `open-pull-requests-limit: 1` | Add the limit to every relevant update entry in each consumer's `dependabot.yml`. | Reduces overlap within one Dependabot update configuration. | It delays discovery and does not prevent concurrency across configurations or ecosystems. | Rejected as an operational throttle rather than a merge solution.
-| **9.** Workflow rerun, retry, `@dependabot rebase`, or `@dependabot recreate` | Manually rerun the workflow or issue the applicable Dependabot command on the PR. | Recovers from some transient states, stale heads, merge conflicts, or broken generated updates. | It does not grant missing permissions or repair incorrect repository auto-merge and branch settings. | Retained only as manual recovery, not as merge coordination.
-
-### 1. `gh pr merge --auto` after validation
-
-The first implementation waited for the build and delegated auto-merge through GitHub CLI:
-
-```yaml
-dependabot-pr-auto-merge:
-  needs: build
-```
-
-```bash
-gh pr merge --auto --rebase "$PR_URL"
-```
-
-Later versions added a merge-method input and protected the tested head:
-
-```bash
-gh pr merge \
-  --auto \
-  --match-head-commit "$PR_HEAD_SHA" \
-  --squash \
-  "$PR_URL"
-```
-
-Advantages:
-
-- Very little custom code.
-- Uses the GitHub-supported CLI path.
-- `--match-head-commit` prevents a later Dependabot push from being merged under an earlier CI result.
-
-Disadvantages:
-
-- When the merge job starts after all required checks, the PR may already be immediately mergeable.
-  `gh pr merge --auto` can then perform or initiate the merge rather than merely register future intent.
-- Native auto-merge is available only when repository settings allow it and an unmet branch requirement exists.
-- It did not provide an explicit fail-closed distinction between registration and immediate merging.
-
-The current workflow uses the GraphQL enable-only mutation to make that distinction explicit.
-See the [`gh pr merge` manual](https://cli.github.com/manual/gh_pr_merge).
-
-### 2. Caller-selected auto-merge or immediate merge
-
-To support both protected and unprotected repositories, the reusable build workflows exposed a
-`dependabot-use-auto-merge` input:
-
-```bash
-merge_args=(
-  "$merge_method_flag"
-  --match-head-commit "$PR_HEAD_SHA"
-)
-if [[ "$DEPENDABOT_USE_AUTO_MERGE" == "true" ]]; then
-  merge_args+=(--auto)
-fi
-gh pr merge "${merge_args[@]}" "$PR_URL"
-```
-
-Advantages:
-
-- Worked with repositories that intentionally had no protected branch.
-- Let each caller choose whether GitHub should wait for branch requirements.
-- Kept the PR-head safety check in both modes.
-
-Disadvantages:
-
-- Every consumer had to understand subtle repository policy and configure the correct boolean.
-- `false` meant an immediate merge after CI, while `true` depended on native auto-merge being available.
-- Configuration drift could change safety behavior without changing the shared workflow.
-- The immediate path retained the concurrent-merge and workflow-file permission problems described below.
-
-This input was removed when protected branches and native auto-merge became the explicit contract.
-
-### 3. Direct REST merge after validation
-
-The most explicit immediate-merge implementation called the REST endpoint and supplied the tested PR head:
-
-```bash
-gh api \
-  --method PUT \
-  "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/merge" \
-  --field sha="$PR_HEAD_SHA" \
-  --field merge_method="$MERGE_METHOD" \
-  --jq '.message'
-```
-
-Advantages:
-
-- Works without repository auto-merge or required status checks.
-- The `sha` field prevents merging a PR head that differs from the one CI validated.
-- The response clearly reports whether the merge completed.
-- Squash and rebase behavior map directly to the REST API.
-
-Disadvantages:
-
-- The workflow, rather than GitHub native auto-merge, owns the final merge attempt.
-- The `sha` field protects the PR head, not the target branch.
-  Another PR can update the target branch after validation.
-- Concurrent PRs can reach the endpoint together and expose base-branch or permission edge cases.
-- Merging a PR that changes `.github/workflows/**` can fail because `GITHUB_TOKEN` is a GitHub App installation
-  token without the separate GitHub App **Workflows** permission.
-
-Typical observed failure:
-
-```text
-gh: refusing to allow a GitHub App to create or update workflow
-`.github/workflows/build.yml` without `workflows` permission (HTTP 403)
-```
-
-Adding this workflow permission did not solve that failure:
-
-```yaml
-permissions:
-  actions: write
-```
-
-`actions: write` controls the Actions API, such as cancelling a workflow run.
-It is not the GitHub App **Workflows** repository permission used to create or update files under
-`.github/workflows/**`.
-That experiment used the direct REST merge endpoint, which immediately performs the workflow-file update.
-It therefore does not contradict the later reports that `actions: write` can allow the GraphQL
-`enablePullRequestAutoMerge` mutation to register native auto-merge.
-The latter behavior remains undocumented and may be a backend compatibility rule rather than a supported
-permission mapping.
-See GitHub's [workflow permission reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions),
-[GitHub App permission guidance](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app),
-GitHub CLI [issue #11493](https://github.com/cli/cli/issues/11493), and
-[Community discussion #108402](https://github.com/orgs/community/discussions/108402).
-
-The REST endpoint itself remains valid and supports an expected `sha`.
-See [Merge a pull request](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
-It was removed here because native auto-merge avoids making this direct workflow-file update through the job token.
-That avoids the failing REST path but does not guarantee that GraphQL registration will bypass GitHub's
-workflow-file authorization check.
-
-### 4. Optional GitHub App token
-
-The workflow was prepared to mint a short-lived installation token with the additional permission:
-
-```yaml
-- uses: actions/create-github-app-token@<pinned-commit>
-  with:
-    client-id: ${{ inputs.github-app-client-id }}
-    private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
-    permission-contents: write
-    permission-pull-requests: write
-    permission-workflows: write
-```
-
-Advantages:
-
-- Can request permissions that are not available through the workflow `GITHUB_TOKEN` permission list.
-- Produces a short-lived installation token scoped to the current repository.
-- Could make the direct REST route work for workflow-file updates in configurations where the built-in token could not.
-
-Disadvantages:
-
-- Every repository needs an App installation and access to the App client ID.
-- Dependabot-triggered workflows require the private key as a Dependabot secret, not only as an Actions secret.
-- Key rotation and App permission changes become operational responsibilities.
-- The App expands the trust boundary of a workflow intended only to register a merge.
-- GitHub has reported workflow-file restrictions even for Apps configured with the Workflows permission in some
-  fork/update-branch scenarios; see [Community discussion #108402](https://github.com/orgs/community/discussions/108402).
-
-The prototype failed early on partial configuration:
-
-```text
-GitHub App Client ID and private key must be configured together.
-```
-
-This was intentional, but it added another failure mode to every caller.
-The native-only design removed the need for App credentials instead of making them mandatory.
-
-### 5. Protected-branch routing
-
-Another version selected GraphQL or REST from the target branch's reported protection state:
-
-```bash
-encoded_base_ref=$(jq -rn --arg value "$PR_BASE_REF" '$value | @uri')
-branch_is_protected=$(gh api \
-  "repos/$GITHUB_REPOSITORY/branches/$encoded_base_ref" \
-  --jq '.protected')
-
-case "$branch_is_protected" in
-  true)  enable_native_auto_merge ;;
-  false) merge_directly_with_rest ;;
-esac
-```
-
-Advantages:
-
-- Made protected and unprotected behavior explicit.
-- Used native auto-merge where branch protection existed.
-- Preserved direct merging for repositories without protection.
-
-Disadvantages:
-
-- Maintained two merge implementations with different timing, permissions, and failure behavior.
-- A protected flag does not by itself prove that a required check is still pending when registration occurs.
-- The unprotected route still needed the direct-merge and optional-App machinery.
-- Callers could not reason about one stable contract from the workflow name alone.
-
-Typical GraphQL failures seen while developing this route were:
-
-```text
-gh: Auto merge is not allowed for this repository
-```
-
-```text
-gh: Pull request Pull request is in unstable status
-```
-
-The first message means the repository or PR is not eligible for native auto-merge.
-The second was observed when registration ran after validation, but GitHub's message does not identify which
-mergeability condition produced the unstable state.
-The current ordering avoids claiming a more specific root cause than the API reported: it registers while a known
-required validation check is pending.
-
-### 6. Registration after validation with the registration check required
-
-One design kept `needs: build` and made the auto-merge registration check itself required.
-While that job was running, its own required check was pending, allowing the enable-only mutation to register
-auto-merge after validation had already passed.
-
-Advantages:
-
-- Validation definitely completed before registration was attempted.
-- The mutation still delegated the final merge to GitHub.
-- A registration failure left the PR open.
-
-Disadvantages:
-
-- The registration job became part of the branch policy solely to create its own unmet condition.
-- Reusable workflow check names differ depending on whether the outer caller or inner job is skipped.
-  Human-authored PRs could remain blocked on a nested check that was never reported.
-- Repository configuration had to select the correct generated nested check name.
-- The self-referential required check was difficult to explain and easy to configure incorrectly.
-
-The typical UI symptom is:
-
-```text
-Expected - Waiting for status to be reported
-```
-
-GitHub users report the reusable-workflow check-name problem in
-[Community discussion #72708](https://github.com/orgs/community/discussions/72708).
-The current design reverses the dependency: required validation waits briefly for registration instead of making
-registration depend on validation.
+~~~
+
+This ordering solved the registration race.
+It required repository auto-merge, a branch rule or ruleset, and at least one required validation check.
+That configuration was useful for getting registration accepted, but it did not grant workflow-file permission.
+
+The decisive result was `docker-graalvm-maven#60`.
+Registration succeeded and CI passed.
+After concurrent `#63` changed the target workflow, GitHub automatically disabled auto-merge with the missing
+Workflows permission message.
+Native auto-merge therefore coordinated timing but did not solve the blocking authorization case.
+
+The earlier `actions: write` experiment also did not solve this final-merge failure.
+Public reports are mixed because GraphQL registration and the later final merge are separate authorization points.
+See [GitHub CLI issue #11493](https://github.com/cli/cli/issues/11493) and
+[open-contracting/kestrel#8](https://github.com/open-contracting/kestrel/pull/8).
 
 ### 7. Concurrency groups
 
-Concurrency was explored because direct merge attempts from several Dependabot PRs appeared to race.
+A repository-wide concurrency group was tried to serialize merge jobs:
 
-#### One repository-wide group
-
-```yaml
+~~~yaml
 concurrency:
   group: dependabot-pr-auto-merge-${{ github.repository }}
   cancel-in-progress: false
-```
+~~~
 
-Advantage:
+With the default single pending slot, a newer queued run replaces the older pending run.
+A burst of Dependabot pull requests can therefore lose intermediate merge jobs even when
+`cancel-in-progress` is false.
 
-- Ensures only one merge job runs at a time.
+A per-PR group avoids cross-PR cancellation but does not serialize different pull requests.
 
-Disadvantage:
+GitHub later added a bounded queue mode that retains up to 100 pending runs:
 
-- With the default `queue: single`, only one run may be pending.
-  A newly queued run replaces the older pending run even when `cancel-in-progress` is `false`.
-  A burst of Dependabot PRs can therefore leave only the running and newest jobs alive.
-
-#### One group per PR
-
-```yaml
-concurrency:
-  group: dependabot-pr-auto-merge-${{ github.repository }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-```
-
-Advantage:
-
-- Prevents a new run for one PR from cancelling a pending run for another PR.
-
-Disadvantage:
-
-- Different PRs run concurrently, so it does not serialize the direct merge operations that motivated the group.
-
-#### Repository-wide queue
-
-GitHub later added an explicit multi-entry queue:
-
-```yaml
+~~~yaml
 concurrency:
   group: dependabot-pr-auto-merge-${{ github.repository }}
   queue: max
   cancel-in-progress: false
-```
+~~~
 
-Advantages:
+This can serialize direct merge jobs, but it cannot add Workflows permission.
+For native auto-merge it does not serialize the later GitHub-owned final merge because the registration job has
+already ended.
+For direct REST it delays jobs but a later merge can still cross the workflow-file permission boundary after an
+earlier merge changed the target branch.
 
-- Serializes jobs while retaining up to 100 pending runs.
-- Avoids the default replacement of an older pending run.
+Actionlint 1.7.12 did not recognize `queue` when this was evaluated.
+See [actionlint issue #657](https://github.com/rhysd/actionlint/issues/657) and
+[GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
-Disadvantages:
-
-- actionlint 1.7.12 does not yet recognize `queue`, producing this false positive:
-
-  ```text
-  unexpected key "queue" for "concurrency" section
-  ```
-
-- It delays independent PRs and adds a repository-wide bottleneck.
-- It is unnecessary when each job only registers native auto-merge and GitHub coordinates final merges.
-
-`queue: max` is valid GitHub syntax; the linter lag is tracked by
-[actionlint issue #657](https://github.com/rhysd/actionlint/issues/657).
-See [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
-for the current queue semantics.
-
-### 8. Limiting Dependabot to one open PR
+### 8. Limiting Dependabot to one open pull request
 
 This repository-level workaround was considered:
 
-```yaml
+~~~yaml
 # .github/dependabot.yml
 updates:
 - package-ecosystem: github-actions
@@ -490,76 +422,85 @@ updates:
   schedule:
     interval: weekly
   open-pull-requests-limit: 1
-```
+~~~
 
-Advantages:
-
-- Reduces concurrent Dependabot PRs for that update configuration.
-- Requires no merge-job synchronization.
-
-Disadvantages:
-
-- Serializes update discovery instead of fixing merge coordination.
-- Delays later dependency updates until the open PR is closed or merged and Dependabot runs again.
-- Must be repeated in every consumer repository and for each relevant update configuration.
-- Does not prevent concurrency across multiple Dependabot update configurations or ecosystems.
-
+It reduces concurrency inside one Dependabot update configuration.
+It also delays later updates, must be copied into every repository, and does not prevent overlap across multiple
+ecosystems or configurations.
 It was rejected as an operational throttle rather than a merge solution.
 
 ### 9. Retry, rerun, rebase, or recreate
 
-Retries and Dependabot commands such as `@dependabot rebase` or `@dependabot recreate` are useful for stale heads,
-merge conflicts, or a broken generated update.
-They do not add the GitHub App Workflows permission and cannot reliably fix a permission-based REST merge failure.
+A workflow rerun uses the original Dependabot-triggered privileges.
+It does not acquire the permissions of the user who clicked **Re-run jobs**, so rerunning an unchanged PR does not
+fix the Workflows permission.
 
-Likewise, manually rerunning a Dependabot-triggered workflow does not grant the rerunning user's permissions to the
-job; GitHub reruns it with the original Dependabot-triggered privileges.
+A Dependabot rebase is different.
+Commenting `@dependabot rebase` asks Dependabot to regenerate the PR head against the current target branch.
+For the observed first-succeeds/later-fails case, this incorporates the first workflow update into the remaining
+Dependabot head, reruns CI, and can allow the built-in token's next merge attempt to succeed.
+It does not grant new permission, so it is recovery rather than a general authorization solution.
+
+`@dependabot recreate` can recover a malformed or stale generated update but is more disruptive than a rebase.
+Use rebase first for the concurrent workflow-file case.
+
 See [Dependabot on GitHub Actions](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-on-actions).
-
-These commands remain valid recovery tools, but they are not part of the merge design.
 
 ## Observed error catalogue
 
-The following messages were observed during this project's experiments or reported by the linked external sources.
-Historical run logs may eventually expire or require authentication.
+Historical run logs can expire or require authentication.
 
-| Message | Context | Current interpretation
-| ------- | ------- | ----------------------
-| `Auto merge is not allowed for this repository` | GraphQL registration | Repository auto-merge is disabled or the repository/PR is otherwise ineligible. The workflow leaves the PR open.
-| `Pull request Pull request is in unstable status` | GraphQL registration after validation | GitHub rejected the PR's current mergeability state. The message did not expose the precise unmet condition.
-| `refusing to allow a GitHub App to create or update workflow ... without workflows permission (HTTP 403)` | Direct REST merge of a workflow-file update | The merge crossed GitHub's workflow-file trust boundary. `actions: write` did not supply the missing GitHub App **Workflows** permission on this path.
-| `refusing to allow a GitHub App to create or update workflow ... without workflows permission (enablePullRequestAutoMerge)` | GraphQL registration of a workflow-file update | GitHub applied the workflow-file authorization check while registering native auto-merge. `actions: write` has resolved this in public examples, but GitHub does not document that mapping; failure leaves the PR open.
+### Observed in these repositories
+
+| Message | Context | Interpretation
+| ------- | ------- | --------------
+| `PR is not from Dependabot, nothing to do` | `dependabot/fetch-metadata` on an apparently Dependabot-authored PR | The action rejected the event. The root cause was not established and should not be attributed to concurrency without more evidence.
+| `refusing to allow a GitHub App to create or update workflow ... without workflows permission (HTTP 403)` | Direct REST merge | The built-in token crossed GitHub's workflow-file trust boundary. `actions: write` did not supply the separate Workflows permission.
+| `Auto merge is not allowed for this repository` | GraphQL registration | Repository auto-merge was disabled or the repository or PR was otherwise ineligible.
+| `Pull request Pull request is in unstable status` | GraphQL registration after validation | GitHub rejected the current mergeability state without identifying the precise condition.
+| `auto-merge was automatically disabled` / `Tried to create or update workflow without workflows permission` | Native final merge after another workflow PR merged | This is the decisive concurrent workflow-file failure. Registration and CI had succeeded, but the final merge was rejected.
 | `Expected - Waiting for status to be reported` | Required nested reusable-workflow check | The configured required check name was not emitted, commonly because the reusable caller was skipped under a different check name.
-| `unexpected key "queue" for "concurrency" section` | actionlint 1.7.12 | Linter lag for GitHub's supported `concurrency.queue` property.
-| `PR is not from Dependabot, nothing to do` | `dependabot/fetch-metadata` | The action rejected the event as non-Dependabot. This occurred on an apparently Dependabot-authored PR; the root cause was not established and should not be attributed to concurrency without more evidence.
+| `unexpected key "queue" for "concurrency" section` | actionlint 1.7.12 | The linter did not yet recognize GitHub's `concurrency.queue` property.
 
-Examples observed during this project's experiments:
+Observed examples:
 
-- [`dependabot/fetch-metadata` rejected an apparently Dependabot-authored PR](https://github.com/sebthom/previewer-eclipse-plugin/actions/runs/32604818843/job/97108527657?pr=54)
+- [Metadata rejected an apparently Dependabot-authored PR](https://github.com/sebthom/previewer-eclipse-plugin/actions/runs/32604818843/job/97108527657?pr=54)
 - [A direct merge failed with the workflow permission error](https://github.com/vegardit/docker-meshcentral/actions/runs/32672738846/job/97276179390?pr=38)
-- [A native auto-merge registration failed with unstable status](https://github.com/vegardit/docker-meshcentral/actions/runs/32745934131/job/97492000833?pr=38)
-- [One concurrent direct-merge run failed](https://github.com/vegardit/docker-gitea-ext/actions/runs/32664564131/job/97256040030?pr=34)
-  while [another PR in the same repository merged](https://github.com/vegardit/docker-gitea-ext/actions/runs/32664562755?pr=35)
-- [A Dependabot rebase command used as manual recovery](https://github.com/futures4j/futures4j/pull/60#issuecomment-5316933465)
+- [Native registration failed with unstable status](https://github.com/vegardit/docker-meshcentral/actions/runs/32745934131/job/97492000833?pr=38)
+- [One concurrent direct merge failed](https://github.com/vegardit/docker-gitea-ext/actions/runs/32664564131/job/97256040030?pr=34)
+  while [another PR in that repository merged](https://github.com/vegardit/docker-gitea-ext/actions/runs/32664562755?pr=35)
+- [Native auto-merge was disabled on the remaining concurrent workflow PR](https://github.com/vegardit/docker-graalvm-maven/pull/60)
+  after [the other workflow PR merged](https://github.com/vegardit/docker-graalvm-maven/pull/63)
+- [A Dependabot rebase command was used as recovery](https://github.com/futures4j/futures4j/pull/60#issuecomment-5316933465)
 
-External reports used to evaluate workflow-file registration:
+### External reports considered
 
-- [GraphQL registration produced the workflow permission error](https://github.com/cli/cli/issues/11493).
-- [A workflow-file update auto-merged after `actions: write` was added](https://github.com/open-contracting/kestrel/pull/8).
+- [GitHub CLI issue #11493](https://github.com/cli/cli/issues/11493) reports the workflow permission error during
+  GraphQL auto-merge registration.
+- [open-contracting/kestrel#8](https://github.com/open-contracting/kestrel/pull/8) reports a workflow-file update
+  succeeding after `actions: write` was added.
+- [Community discussion #108402](https://github.com/orgs/community/discussions/108402) discusses GitHub App
+  Workflows permission restrictions in update-branch and fork scenarios.
 
-## Why the current design is intentionally narrower
+These reports do not override the first-hand `docker-graalvm-maven#60` result.
+In that run, `actions: write`, native auto-merge, branch protection, and passing CI still did not prevent the
+concurrent workflow-file merge from being disabled.
 
-The experiments attempted to support protected and unprotected branches, immediate and delayed merges, two APIs,
-optional App authentication, and custom serialization in one reusable workflow.
-Each additional route made the caller contract and failure behavior harder to verify.
+## Why the current design is intentionally explicit
 
-The current workflow has one policy:
+The current workflow no longer tries to infer branch protection or hide two authorization models behind a routing
+flag.
 
-1. Register native auto-merge for an eligible Dependabot PR while required validation is pending.
-1. Pin registration to the current PR head.
-1. Let required checks gate the final merge.
-1. Let GitHub coordinate concurrent final merges.
-1. Fail without directly merging when that policy cannot be registered.
+It has one merge policy and two explicit credential choices:
 
-This narrower contract requires branch protection, but it removes the permission-sensitive direct merge and the
-custom concurrency mechanisms that produced most of the observed complexity.
+1. The caller's validation job must succeed.
+1. The merge is pinned to the validated Dependabot head.
+1. Direct REST performs the selected squash or rebase merge.
+1. The built-in token is the simple default.
+1. The GitHub App token is the opt-in permission-complete path for concurrent workflow-file updates.
+1. Without the App, the known concurrent workflow-file failure remains visible and recoverable with a Dependabot
+   rebase.
+
+This design accepts that target-branch freshness is not pinned.
+It removes the branch-protection and native-auto-merge configuration that did not solve the actual blocker, while
+preserving a credential-free path for repositories that prefer minimal setup.

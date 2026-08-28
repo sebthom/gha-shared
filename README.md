@@ -27,7 +27,7 @@ These components help standardize CI/CD pipelines across multiple repositories b
 
 | Workflow Name         | Path                                                   | Description
 | ----------------------| ------------------------------------------------------ | -----------
-| Dependabot Auto-Merge | `.github/workflows/reusable.dependabot-auto-merge.yml` | Registers native auto-merge for eligible Dependabot pull requests.
+| Dependabot Auto-Merge | `.github/workflows/reusable.dependabot-auto-merge.yml` | Merges eligible Dependabot pull requests after validation, with optional GitHub App authentication.
 | Maven Build           | `.github/workflows/reusable.maven-build.yml`           | Builds, tests, and releases Maven projects with multi-JDK matrix. Includes Dependabot auto-merge.
 | Eclipse Plugin Build  | `.github/workflows/reusable.eclipse-plugin-build.yml`  | Builds, tests, and releases Eclipse plugins. Includes Dependabot auto-merge.
 | Eclipse Product Build | `.github/workflows/reusable.eclipse-product-build.yml` | Builds, tests, and releases Eclipse products. Includes Dependabot auto-merge.
@@ -35,36 +35,23 @@ These components help standardize CI/CD pipelines across multiple repositories b
 
 ### <a name="reusable-workflow-dependabot-auto-merge"></a>Reusable Workflow: Dependabot Auto-Merge
 
-Use the **Dependabot Auto-Merge** workflow before the caller's validation job.
+Use the **Dependabot Auto-Merge** workflow after the caller's validation job.
 The caller must include the `pull_request` event.
-The workflow accepts only pull requests authored by Dependabot and skips registration for other events.
+The workflow accepts only Dependabot-initiated events for pull requests authored by Dependabot and skips all other
+events.
 Minor and patch updates are eligible by default, while major updates are opt-in.
-It registers GitHub native auto-merge and relies on branch protection to prevent the final merge until every
-required validation check succeeds.
+The merge request is pinned to the validated pull request head SHA.
+Repository auto-merge and branch protection are not required.
+
+The built-in `github.token` remains the credential-free default.
+However, it cannot reliably merge concurrent Dependabot pull requests that both modify `.github/workflows/**`.
+Configure the optional GitHub App credentials when these workflow-file updates must merge without manual recovery.
 
 #### Example
 
 ```yaml
 jobs:
-  dependabot-auto-merge:
-    permissions:
-      actions: write
-      contents: write
-      pull-requests: write
-    uses: sebthom/gha-shared/.github/workflows/reusable.dependabot-auto-merge.yml@v1
-    # All inputs are optional. The values below demonstrate restricting merges
-    # to GitHub Actions updates while retaining the default merge behavior.
-    with:
-      package-ecosystems: '["github-actions"]'
-      merge-method: squash
-      merge-major-updates: false
-
   build:
-    # Run dependabot auto-merge setup first so GitHub sees this required validation check as pending.
-    needs: dependabot-auto-merge
-    # A failed or skipped dependabot auto-merge setup must not suppress the normal build.
-    if: ${{ !cancelled() }}
-
     runs-on: ubuntu-latest
     steps:
     - name: Build and test
@@ -72,6 +59,30 @@ jobs:
         # Fail safely until this placeholder is replaced with the project's validation commands.
         echo "Replace this placeholder with the project's build and test commands." >&2
         exit 1
+
+  dependabot-auto-merge:
+    # A failed or skipped build must never reach the merge workflow.
+    needs: build
+    # Check both the actor and PR author so this write-capable job only runs for Dependabot updates.
+    if: >-
+      needs.build.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: sebthom/gha-shared/.github/workflows/reusable.dependabot-auto-merge.yml@v1
+    # All inputs are optional. These values restrict merges to GitHub Actions updates.
+    with:
+      package-ecosystems: '["github-actions"]'
+      merge-method: squash
+      merge-major-updates: false
+      # Optional permission-complete path for concurrent workflow-file updates:
+      # github-app-client-id: ${{ vars.DEPENDABOT_MERGE_GITHUB_APP_CLIENT_ID }}
+    # Omit this block when using the built-in github.token.
+    # secrets:
+    #   DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
 ```
 
 #### Inputs
@@ -81,31 +92,27 @@ jobs:
 | `package-ecosystems`   | str  | `["*"]`  | JSON array of Dependabot ecosystems eligible for merging. Use `["*"]` for all ecosystems or `[]` for none.
 | `merge-method`         | str  | `squash` | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
 | `merge-major-updates`  | bool | `false`  | Whether major Dependabot updates are eligible for merging. Minor and patch updates remain eligible by default.
+| `github-app-client-id` | str  | -        | Optional GitHub App client ID. It must be supplied together with `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
+
+#### Secrets
+
+| Name                                      | Description
+| ----------------------------------------- | -----------
+| `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY` | Optional GitHub App private key. Store it as a Dependabot secret and supply it together with `github-app-client-id`.
 
 #### Caller Configuration
 
-Place registration and validation in the same workflow dependency graph.
-The `dependabot-auto-merge` job must not depend on validation.
-At least one required validation job must depend on it and use `if: ${{ !cancelled() }}` so a failed or skipped
-registration does not suppress validation.
-If validation has other prerequisite jobs, preserve their success checks explicitly, for example with
-`if: ${{ !cancelled() && needs.init.result == 'success' }}`.
-Independently triggered workflows do not provide equivalent ordering because GitHub may schedule either one first.
-The `dependabot-auto-merge` job must grant these permissions:
+Make the merge job depend on every job that must succeed before the pull request is merged.
+A dependency on a matrix job waits for all matrix cells, so no branch-rule status-check configuration is needed.
+Keep validation and merging in the same workflow dependency graph so `needs` provides the ordering guarantee.
+
+The calling job must grant these permissions for the built-in-token path:
 
 ```yaml
 permissions:
-  actions: write
   contents: write
   pull-requests: write
 ```
-
-`actions: write` is an empirically successful compatibility workaround for native auto-merge registrations that
-modify `.github/workflows/**`.
-GitHub does not document it as a substitute for the separate GitHub App **Workflows** permission.
-It also did not fix the earlier direct REST merge implementation; see the
-[design history](.github/workflows/reusable.dependabot-auto-merge.md#3-direct-rest-merge-after-validation)
-for the distinction and supporting evidence.
 
 By default, every Dependabot package ecosystem is eligible.
 Set `package-ecosystems` only when you want an allowlist.
@@ -123,105 +130,101 @@ The workflow translates these internal names before applying the allowlist.
 
 #### Repository Configuration
 
-GitHub permits native auto-merge registration only while a pull request is waiting for at least one merge
-requirement.
-Even if the repository otherwise does not need merge restrictions, this workflow therefore needs one required
-validation check on every branch targeted by Dependabot.
+Enable the merge method selected by `merge-method` under **Settings > General > Pull Requests**.
+No other repository setting is required by this workflow.
+In particular, **Allow auto-merge**, branch protection, rulesets, and required status checks are unnecessary unless
+the repository uses them for reasons unrelated to Dependabot.
+Existing branch rules still apply and can reject the direct merge after validation.
+Protected branches are supported, but the workflow makes one merge request and does not wait for unmet branch
+requirements.
+Required checks and approvals must already be complete, and any requirement that the branch be up to date must be
+satisfied when the merge job runs.
+Otherwise, the merge fails and leaves the pull request open.
+Make a standalone merge job depend on every required validation job in the same workflow.
+The embedded Maven and Eclipse workflows wait for their build matrix only, so required checks from other workflows
+must finish before the merge job runs or the failed merge job must be rerun afterward.
+The optional GitHub App follows the same branch rules unless the App is explicitly configured as a bypass actor.
 
-Use this minimal configuration:
+#### Optional GitHub App Authentication
 
-##### Settings > General > Pull Requests
+The GitHub App is optional for ordinary dependency updates.
+It is the permission-complete path for repositories that need concurrent Dependabot workflow-file updates to merge
+without manual recovery.
 
-1. Enable **Allow auto-merge**.
-1. Enable the selected merge method.
-   Enable **Allow squash merging** for `merge-method: squash` or **Allow rebase merging** for
-   `merge-method: rebase`.
+1. Create a GitHub App with repository permissions **Contents: Read and write** and
+   **Workflows: Read and write**.
+1. Install the App on each repository that will use it.
+1. Store its client ID in a repository variable such as `DEPENDABOT_MERGE_GITHUB_APP_CLIENT_ID`.
+1. Store its private key as a repository or organization **Dependabot secret** named
+   `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
+   An Actions secret with the same name is not available to a Dependabot-triggered `pull_request` workflow.
+1. Pass the variable and secret as shown in the commented lines of the example.
 
-##### Settings > Rulesets
+Both values must be present or both must be omitted.
+The workflow fails explicitly on partial App configuration.
+The generated installation token is scoped to the current repository, requests only the two permissions above,
+and is revoked when the merge job ends.
 
-1. Run the validation workflow successfully once if its check is not yet available for selection.
-   GitHub only offers
-   [checks that completed successfully in the repository during the previous seven days](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
-1. Create a **New branch ruleset**.
-1. Enter a descriptive **Ruleset name**, such as `Required validation for auto-merge`, and set
-   **Enforcement status** to **Active**.
-   The name does not select a branch.
-1. Under **Target branches**, select **Add target > Include default branch**.
-   Select a branch explicitly instead if Dependabot targets a branch other than the default branch.
-1. Optionally, configure the **Bypass list** if selected users should still be allowed to push directly:
-   - If this ruleset exists only to enable Dependabot auto-merge, add your user account and select
-     **Always allow**.
-     This keeps direct pushes available to that account without exempting Dependabot from validation.
-     Add a team or repository role instead only when every member should have the same bypass permission.
-   - If direct pushes must also pass the required check, leave the bypass list empty.
-   Do not add Dependabot or GitHub Actions to the bypass list because Dependabot pull requests must remain
-   subject to the required validation check.
-   See [GitHub's ruleset bypass documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository#granting-bypass-permissions-for-your-branch-or-tag-ruleset)
-   for the available bypass actors and modes.
-1. Under **Branch rules**, enable **Require status checks to pass**.
-   This workflow does not require any other branch rule.
-   Enable additional rules such as **Require a pull request before merging**, **Restrict deletions**, or
-   **Block force pushes** when they match the repository's policy.
-1. Expand the additional settings for **Require status checks to pass** and select **Add checks**.
-   The dropdown may initially be empty because GitHub treats it as a search field rather than a list.
-   For a non-matrix job, type its exact displayed name, for example `build`, then select the matching result.
-   [GitHub matches required checks by job name and does not interpret matrix configuration as one combined check](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/troubleshooting-rules#troubleshooting-required-status-checks).
-   For a matrix job, GitHub reports a separate check for every matrix cell, such as
-   `build (latest, 11, false)` and `build (latest, 17, false)`.
-   Select every matrix check that must pass before merging.
-   Do not select only the unsuffixed name `build` unless the workflow contains a separate job that reports that
-   exact name; otherwise the pull request waits indefinitely for a check that never runs.
-   If the matrix changes frequently, consider requiring a stable aggregate job instead of updating the ruleset
-   for every matrix change:
+The private key must only be passed to a trusted published revision of this reusable workflow, such as the `@v1`
+reference shown above or an immutable commit SHA.
+Do not pass it to a same-repository `./.github/workflows/...` workflow selected by a pull request commit.
+GitHub resolves a local reusable workflow from the same commit as its caller, which would expand the private key's
+trust boundary to pull request code.
+The workflow also requires both `github.actor` and the pull request author to be Dependabot before the secret-bearing
+job can run.
+A manual rerun keeps the original actor, while a human-generated pull request event is skipped.
 
-   ```yaml
-   build-result:
-     name: build-result
-     needs: build
-     # A failed dependency normally skips this job, and GitHub treats skipped required checks as successful.
-     if: ${{ always() }}
-     runs-on: ubuntu-latest
-     steps:
-       - name: Verify build matrix
-         env:
-           BUILD_RESULT: ${{ needs.build.result }}
-         run: test "$BUILD_RESULT" = success
-   ```
+See [GitHub's App permission documentation](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
+and [Dependabot secret documentation](https://docs.github.com/en/code-security/reference/secret-security/secret-types#dependabot-secrets).
 
-   Require `build-result` in the ruleset when using this pattern.
-   At least one required validation check must run on every Dependabot pull request, but GitHub does not wait
-   for any unselected checks.
-   Do not select the `dependabot-pr-auto-merge` registration check.
-   Leave **Require branches to be up to date before merging** disabled.
-   See [GitHub's ruleset documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
-   for details about the available rules.
+#### Blocking Issue: Concurrent Workflow-File Updates
 
-Do not make the auto-merge registration job a required check.
-Instead, make at least one required validation job depend on the registration job and use
-`if: ${{ !cancelled() }}` so validation still runs if registration fails or is skipped.
-The Maven and Eclipse reusable build workflows already define this dependency.
-A standalone caller must preserve the dependency shown in the example above.
-This dependency guarantees that validation cannot finish before registration is attempted; it does not rely on
-workflow scheduling or relative runtime.
-A required branch condition is therefore still unsatisfied when GitHub evaluates
-[native auto-merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request)
-for the pull request.
-After registration, GitHub waits for every branch requirement and performs the final merge.
+The recurring platform limitation across the evaluated designs is specific and important:
+**two or more concurrent Dependabot pull requests modify files under `.github/workflows/**`.**
 
-The workflow uses the enable-only
-[`enablePullRequestAutoMerge` mutation](https://docs.github.com/en/graphql/reference/pulls#enablepullrequestautomerge).
-It never falls back to a direct merge.
-Missing required status checks, a non-required validation check,
-or incompatible repository settings therefore leave the pull request open instead of bypassing validation.
-Target branches that require a merge queue are not supported because the built-in `github.token` cannot add a
-pull request to that queue.
+The first pull request can merge successfully with the built-in token.
+After it changes the target branch, GitHub may treat the next merge as creating or updating the combined workflow
+file and reject the `github-actions[bot]` token because that token has no **Workflows** repository permission:
 
-##### Concurrent Pull Requests
+```text
+auto-merge was automatically disabled
+Tried to create or update workflow without `workflows` permission
+```
 
-Each workflow run only registers native auto-merge for its own pull request.
-GitHub waits for the required checks and coordinates the final merges across concurrent pull requests.
-If the branch rule requires pull requests to be up to date, a newer target-branch commit can require another
-Dependabot update and validation run before GitHub merges the remaining pull request.
+This happened when
+[`docker-graalvm-maven#63`](https://github.com/vegardit/docker-graalvm-maven/pull/63) merged while
+[`docker-graalvm-maven#60`](https://github.com/vegardit/docker-graalvm-maven/pull/60) was also passing CI.
+Native auto-merge did not fix the problem: registration succeeded for both PRs, but GitHub disabled auto-merge for
+the remaining PR after the first workflow update reached the target branch.
+`workflows: write` is not a valid job `permissions` key for the built-in `github.token`.
+`actions: write` is a different permission and does not authorize workflow-file changes.
+The optional App supplies the separate **Workflows: write** repository permission through its installation token.
+
+Without App credentials, recover by commenting `@dependabot rebase` on the remaining PR.
+The resulting force-push reruns validation and makes another merge attempt against the updated target branch.
+With App credentials, the merge request uses a short-lived token that explicitly has **Workflows: write**.
+
+#### Credential-Free Mitigation
+
+If GitHub App credentials are not available, serialize GitHub Actions version updates in `.github/dependabot.yml`:
+
+```yaml
+version: 2
+updates:
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: daily
+  open-pull-requests-limit: 1
+```
+
+`open-pull-requests-limit: 1` allows only one open version-update pull request for this update entry.
+The `daily` schedule checks for updates every weekday, so the next waiting version update can be opened on a later
+scheduled run after the current pull request is merged or closed.
+These settings reduce overlapping workflow-file updates but do not give the built-in token **Workflows: write**.
+They also do not limit security-update pull requests, so overlap can still occur.
+An unresolved version-update pull request delays later version updates for this entry.
+If overlap still occurs, use the `@dependabot rebase` recovery described above or configure the GitHub App.
 
 *For implementation details, see
 [.github/workflows/reusable.dependabot-auto-merge.yml](.github/workflows/reusable.dependabot-auto-merge.yml).
@@ -233,11 +236,12 @@ For evaluated alternatives and observed failures, see
 
 To use the **Maven Build** workflow, reference its YAML file in your repository's workflow definition.
 This workflow includes [Dependabot Auto-Merge](#reusable-workflow-dependabot-auto-merge) for eligible
-Dependabot pull requests.
+Dependabot pull requests after the build succeeds.
 Its embedded auto-merge call is limited to the `maven` and `github-actions` package ecosystems.
 Use the standalone workflow for any additional ecosystems.
-Repositories using Dependabot with this workflow must complete the
-[repository configuration](#repository-configuration).
+The built-in token is used by default.
+Configure the optional GitHub App credentials described above when concurrent Dependabot workflow-file updates
+must merge without manual recovery.
 
 #### Example
 
@@ -290,12 +294,16 @@ jobs:
       debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
+      # Optional permission-complete path for concurrent workflow-file updates:
+      # dependabot-github-app-client-id: ${{ vars.DEPENDABOT_MERGE_GITHUB_APP_CLIENT_ID }}
+
     secrets:
       SONATYPE_CENTRAL_USER:  ${{ secrets.SONATYPE_CENTRAL_USER }}
       SONATYPE_CENTRAL_TOKEN: ${{ secrets.SONATYPE_CENTRAL_TOKEN }}
       GPG_SIGN_KEY:           ${{ secrets.GPG_SIGN_KEY }}
       GPG_SIGN_KEY_PWD:       ${{ secrets.GPG_SIGN_KEY_PWD }}
       CODECOV_TOKEN:          ${{ secrets.CODECOV_TOKEN }}
+      # DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
 
     permissions:
       actions: write        # to delete action cache entries
@@ -313,6 +321,7 @@ jobs:
 |**Dependabot:**
 | `dependabot-merge-method`           | str  | `squash`                 | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
 | `dependabot-merge-major-updates`    | bool | `false`                  | Whether major Dependabot updates are eligible for merging. Minor and patch updates remain eligible by default.
+| `dependabot-github-app-client-id`   | str  | -                        | Optional GitHub App client ID. It must be supplied together with `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
 |**Java:**
 | `compile-jdk`                       | str  | -                        | **REQUIRED** The JDK for compilation, either a major version (e.g. `11`, `17`) or vendor-qualified (`temurin@11`).
 | `test-jdks`                         | str  | -                        | A comma- or newline-separated list of additional JDKs to run unit tests against (e.g. `11,17` or `temurin@11`). Append `!` to allow failures for that JDK (e.g. `17!`).
@@ -344,6 +353,7 @@ jobs:
 | `GPG_SIGN_KEY`           | Base64-encoded GPG private key for signing release artifacts.
 | `GPG_SIGN_KEY_PWD`       | Passphrase for the GPG signing keys.
 | `CODECOV_TOKEN`          | Codecov upload token for publishing test coverage reports.
+| `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY` | Optional GitHub App private key. Store it as a Dependabot secret and supply it together with `dependabot-github-app-client-id`.
 
 *For full details, see the [.github/workflows/reusable.maven-build.yml](.github/workflows/reusable.maven-build.yml)*
 
@@ -352,11 +362,12 @@ jobs:
 
 To use the **Eclipse Plugin Build** workflow, reference its YAML file in your repository's workflow definition.
 This workflow includes [Dependabot Auto-Merge](#reusable-workflow-dependabot-auto-merge) for eligible
-Dependabot pull requests.
+Dependabot pull requests after the build succeeds.
 Its embedded auto-merge call is limited to the `maven` and `github-actions` package ecosystems.
 Use the standalone workflow for any additional ecosystems.
-Repositories using Dependabot with this workflow must complete the
-[repository configuration](#repository-configuration).
+The built-in token is used by default.
+Configure the optional GitHub App credentials described above when concurrent Dependabot workflow-file updates
+must merge without manual recovery.
 
 #### Example
 
@@ -404,6 +415,13 @@ jobs:
       debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
+      # Optional permission-complete path for concurrent workflow-file updates:
+      # dependabot-github-app-client-id: ${{ vars.DEPENDABOT_MERGE_GITHUB_APP_CLIENT_ID }}
+
+    # Omit this block when using the built-in github.token.
+    # secrets:
+    #   DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
+
     permissions:
       actions: write       # to delete action cache entries
       contents: write      # to create releases (commit to updatesite branches)
@@ -416,6 +434,13 @@ jobs:
 | ----------------------------------------- | ---- | -------- | -----------
 | `dependabot-merge-method`                 | str  | `squash` | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
 | `dependabot-merge-major-updates`          | bool | `false`  | Whether major Dependabot updates are eligible for merging. Minor and patch updates remain eligible by default.
+| `dependabot-github-app-client-id`         | str  | -        | Optional GitHub App client ID. It must be supplied together with `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
+
+#### Dependabot Secrets
+
+| Name                                      | Description
+| ----------------------------------------- | -----------
+| `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY` | Optional GitHub App private key. Store it as a Dependabot secret and supply it together with `dependabot-github-app-client-id`.
 
 *For full details, see the [.github/workflows/reusable.eclipse-plugin-build.yml](.github/workflows/reusable.eclipse-plugin-build.yml)*
 
@@ -424,11 +449,12 @@ jobs:
 
 To use the **Eclipse Product Build** workflow, reference its YAML file in your repository's workflow definition.
 This workflow includes [Dependabot Auto-Merge](#reusable-workflow-dependabot-auto-merge) for eligible
-Dependabot pull requests.
+Dependabot pull requests after the build succeeds.
 Its embedded auto-merge call is limited to the `maven` and `github-actions` package ecosystems.
 Use the standalone workflow for any additional ecosystems.
-Repositories using Dependabot with this workflow must complete the
-[repository configuration](#repository-configuration).
+The built-in token is used by default.
+Configure the optional GitHub App credentials described above when concurrent Dependabot workflow-file updates
+must merge without manual recovery.
 
 #### Example
 
@@ -473,6 +499,13 @@ jobs:
       debug-with-ssh-only-for-actor: ${{ inputs.debug-with-ssh-only-for-actor }}
       debug-with-ssh-only-jobs-matching: ${{ inputs.debug-with-ssh-only-jobs-matching }}
 
+      # Optional permission-complete path for concurrent workflow-file updates:
+      # dependabot-github-app-client-id: ${{ vars.DEPENDABOT_MERGE_GITHUB_APP_CLIENT_ID }}
+
+    # Omit this block when using the built-in github.token.
+    # secrets:
+    #   DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
+
     permissions:
       actions: write       # to delete action cache entries
       contents: write      # to create releases (commit to updatesite branches)
@@ -485,6 +518,13 @@ jobs:
 | ----------------------------------------- | ---- | -------- | -----------
 | `dependabot-merge-method`                 | str  | `squash` | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
 | `dependabot-merge-major-updates`          | bool | `false`  | Whether major Dependabot updates are eligible for merging. Minor and patch updates remain eligible by default.
+| `dependabot-github-app-client-id`         | str  | -        | Optional GitHub App client ID. It must be supplied together with `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
+
+#### Dependabot Secrets
+
+| Name                                      | Description
+| ----------------------------------------- | -----------
+| `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY` | Optional GitHub App private key. Store it as a Dependabot secret and supply it together with `dependabot-github-app-client-id`.
 
 *For full details, see the [.github/workflows/reusable.eclipse-product-build.yml](.github/workflows/reusable.eclipse-product-build.yml)*
 

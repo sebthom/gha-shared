@@ -31,6 +31,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
         description: "Whether major Dependabot updates are eligible for merging"
         default: false
         type: boolean
+      dependabot-github-app-client-id:
+        description: "Optional GitHub App client ID used with the private-key secret for workflow-file merges"
+        default: ""
+        type: string
 
       target-files:
         description: >
@@ -153,6 +157,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
       gha-shared-version: { default: "v1",                 type: string, description: "Version of this workflow: branch, tag or commit" }
 
     secrets:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callsecrets
+      DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY:
+        description: "Optional GitHub App private key for Dependabot workflow-file merges"
+        required: false
+
       JARSIGNER_KEYSTORE:
         description: >
           Provides the key material used by the `maven-jarsigner-plugin` to sign generated JAR artifacts.
@@ -394,43 +402,11 @@ jobs:
 
 
   ###########################################################
-  dependabot-pr-auto-merge:
-  ###########################################################
-    # Initialization must succeed before auto-merge can be armed.
-    # The build job waits for this attempt, so validation cannot finish before registration.
-    # Branch protection prevents GitHub from completing the merge until that validation succeeds.
-    needs: init
-
-    # Avoid invoking the nested workflow for unrelated runs. The called workflow repeats author filtering because
-    # standalone callers do not have this boundary.
-    if: ${{ needs.init.result == 'success' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
-
-    permissions:
-      # Forward the undocumented GraphQL workflow-file workaround; nested reusable workflows cannot elevate it.
-      # https://github.com/cli/cli/issues/11493
-      actions: write
-      contents: write
-      pull-requests: write
-
-    # Resolve the nested workflow from the same commit as this build workflow, including PR invocations.
-    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow
-    uses: ./.github/workflows/reusable.dependabot-auto-merge.yml
-    with:
-      # This build workflow owns Maven and GitHub Actions updates; standalone callers default to all ecosystems.
-      package-ecosystems: '["github-actions","maven"]'
-      merge-method: ${{ inputs.dependabot-merge-method }}
-      merge-major-updates: ${{ inputs.dependabot-merge-major-updates }}
-
-
-  ###########################################################
   build:
   ###########################################################
     runs-on: ${{ matrix.RUNS_ON }}  # https://github.com/actions/runner-images#available-images
     continue-on-error: ${{ matrix.ALLOW_FAILURE }}
-    # Keep registration and validation in one dependency graph; independent workflows provide no ordering guarantee.
-    # A registration failure must not suppress validation, but a failed matrix initialization still must.
-    needs: [ init, dependabot-pr-auto-merge ]
-    if: ${{ !cancelled() && needs.init.result == 'success' }}
+    needs: [ init ]
     timeout-minutes: ${{ inputs.timeout-minutes }}
     strategy:
       fail-fast: false
@@ -1059,6 +1035,38 @@ jobs:
     outputs:
       RELEASE_NAME:              ${{ steps.OUTPUTS.outputs.RELEASE_NAME }}
       RELEASE_UPDATESITE_BRANCH: ${{ steps.OUTPUTS.outputs.RELEASE_UPDATESITE_BRANCH }}
+
+
+  ###########################################################
+  dependabot-pr-auto-merge:
+    ###########################################################
+    # Merge only after the build matrix has validated the exact Dependabot head supplied to the nested workflow.
+    needs: build
+
+    # The called workflow repeats these checks because standalone callers need the same boundary.
+    # Check both the actor and PR author so this write-capable job only runs for Dependabot updates.
+    # Manual reruns keep the original actor and remain allowed.
+    if: >-
+      needs.build.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    # Resolve the nested workflow from the same commit as this build workflow, including PR invocations.
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow
+    uses: ./.github/workflows/reusable.dependabot-auto-merge.yml
+    with:
+      # This build workflow owns Maven and GitHub Actions updates; standalone callers default to all ecosystems.
+      package-ecosystems: '["github-actions","maven"]'
+      merge-method: ${{ inputs.dependabot-merge-method }}
+      merge-major-updates: ${{ inputs.dependabot-merge-major-updates }}
+      github-app-client-id: ${{ inputs.dependabot-github-app-client-id }}
+    secrets:
+      DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
 
 
   ###########################################################
