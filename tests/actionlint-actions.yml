@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: © Sebastian Thomschke
+# SPDX-FileContributor: Sebastian Thomschke (https://sebthom.de/)
+# SPDX-License-Identifier: MIT
+# SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
+#
+# References every repository-owned action so actionlint loads and validates its metadata.
+
+name: Local action metadata fixture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: ./.github/actions/build-release-notes
+      with:
+        release-name: test
+
+    - uses: ./.github/actions/cleanup-release
+      with:
+        release-name: test
+
+    - uses: ./.github/actions/setup-java
+      with:
+        jdks: 21
+
+    - uses: ./.github/actions/stale

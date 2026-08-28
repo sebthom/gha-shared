@@ -219,12 +219,12 @@ assert_ecosystem_mapping maven maven
 
 # Lock the complete eligibility policy so an operator change cannot silently broaden Dependabot auto-merge.
 actual_eligibility_expression=$(extract_step_if_expression "Merge eligible Dependabot PR")
-expected_eligibility_expression="(contains(fromJSON(inputs.package-ecosystems),'*')"\
-"||contains(fromJSON(inputs.package-ecosystems),steps.ECOSYSTEM.outputs.name))"\
-"&&(steps.METADATA.outputs.update-type=='version-update:semver-minor'"\
-"||steps.METADATA.outputs.update-type=='version-update:semver-patch'"\
-"||(inputs.merge-major-updates"\
-"&&steps.METADATA.outputs.update-type=='version-update:semver-major'))"
+expected_eligibility_expression="(contains(fromJSON(inputs.package-ecosystems),'*')\
+||contains(fromJSON(inputs.package-ecosystems),steps.ECOSYSTEM.outputs.name))\
+&&(steps.METADATA.outputs.update-type=='version-update:semver-minor'\
+||steps.METADATA.outputs.update-type=='version-update:semver-patch'\
+||(inputs.merge-major-updates\
+&&steps.METADATA.outputs.update-type=='version-update:semver-major'))"
 if [[ $actual_eligibility_expression != "$expected_eligibility_expression" ]]; then
   fail "Dependabot eligibility policy changed unexpectedly: $actual_eligibility_expression"
 fi
@@ -239,11 +239,12 @@ assert_contains "$WORKFLOW_FILE" "permission-contents: write"
 # Metadata uses github.token, so the App token needs only the permissions used by the merge operation.
 assert_not_contains "$WORKFLOW_FILE" "permission-pull-requests: write"
 assert_contains "$WORKFLOW_FILE" "permission-workflows: write"
-assert_contains "$WORKFLOW_FILE" 'GH_TOKEN: ${{steps.APP_TOKEN.outputs.token || github.token}}'
+# Escape '$' because these assertions match literal workflow and embedded-script source.
+assert_contains "$WORKFLOW_FILE" "GH_TOKEN: \${{steps.APP_TOKEN.outputs.token || github.token}}"
 assert_not_contains "$WORKFLOW_FILE" "actions: write"
 assert_not_contains "$WORKFLOW_FILE" "enablePullRequestAutoMerge"
 assert_not_contains "$WORKFLOW_FILE" "queue: max"
-assert_contains "$WORKFLOW_FILE" 'pulls/$PR_NUMBER/merge'
+assert_contains "$WORKFLOW_FILE" "pulls/\$PR_NUMBER/merge"
 
 # Both App values form one optional authentication mode; partial configuration must fail visibly.
 run_app_auth_script
@@ -272,8 +273,9 @@ for caller_workflow_file in "${CALLER_WORKFLOW_FILES[@]}"; do
   assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" "pull-requests: write"
   assert_not_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" "actions: write"
   assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" "uses: ./.github/workflows/reusable.dependabot-auto-merge.yml"
-  assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" 'github-app-client-id: ${{ inputs.dependabot-github-app-client-id }}'
-  assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" 'DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}'
+  # Escape '$' so caller expressions are matched literally rather than expanded by this test shell.
+  assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" "github-app-client-id: \${{ inputs.dependabot-github-app-client-id }}"
+  assert_contains "$CALLER_AUTO_MERGE_JOB_BLOCK" "DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: \${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}"
 
   assert_contains "$caller_workflow_file" "dependabot-github-app-client-id:"
   assert_contains "$caller_workflow_file" "DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY:"
@@ -281,7 +283,7 @@ for caller_workflow_file in "${CALLER_WORKFLOW_FILES[@]}"; do
   extract_caller_job "$caller_workflow_file" build "$CALLER_BUILD_JOB_BLOCK"
   assert_contains "$CALLER_BUILD_JOB_BLOCK" "needs: [ init ]"
   assert_not_contains "$CALLER_BUILD_JOB_BLOCK" "dependabot-pr-auto-merge"
-  assert_not_contains "$CALLER_BUILD_JOB_BLOCK" 'if: ${{ !cancelled() && needs.init.result == '\''success'\'' }}'
+  assert_not_contains "$CALLER_BUILD_JOB_BLOCK" "if: \${{ !cancelled() && needs.init.result == 'success' }}"
 done
 
 run_merge_script squash
