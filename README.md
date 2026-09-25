@@ -236,7 +236,8 @@ For evaluated alternatives and observed failures, see
 
 To use the **Maven Build** workflow, reference its YAML file in your repository's workflow definition.
 This workflow includes [Dependabot Auto-Merge](#reusable-workflow-dependabot-auto-merge) for eligible
-Dependabot pull requests after the build succeeds.
+Dependabot pull requests after the build succeeds by default.
+Set `dependabot-auto-merge: false` when the calling workflow owns merging, for example to wait for downstream jobs.
 Its embedded auto-merge call is limited to the `maven` and `github-actions` package ecosystems.
 Use the standalone workflow for any additional ecosystems.
 The built-in token is used by default.
@@ -311,6 +312,21 @@ jobs:
       pull-requests: write  # for dependabot PR auto merges
 ```
 
+#### Build artifacts and releases
+
+Set `build-artifact-paths` to upload files after the `after-build` hook.
+Only the compile-JDK build on the first configured runner and Maven version uploads this artifact.
+Dependent jobs in the calling workflow can download it using `build-artifact-name` (default: `build-artifacts`).
+Artifact names are trimmed before upload.
+The `coverage-` name prefix is reserved for temporary coverage reports and cannot be used for build artifacts.
+
+Set `maven-deploy: false` to use `verify` for ordinary builds and `install` for `release:perform`.
+This skips Maven artifact and site publication, including snapshot and Javadoc branch deployment.
+Matching release triggers still create version commits and tags.
+Releases and deployments normally run only on pushes to `development-branch`.
+Set `release-on-workflow-dispatch: true` to allow them on manual runs of that branch as well.
+Supply the optional `RELEASE_TOKEN` secret when release Git operations need credentials other than `GITHUB_TOKEN`.
+
 #### Inputs
 
 | Name                                | Type | Default                  | Description
@@ -319,6 +335,7 @@ jobs:
 | `runs-on`                           | str  | `ubuntu-latest`          | A comma- or newline-separated list of GitHub Actions runner labels (e.g. `ubuntu-latest,windows-latest`). Append `!` to any label to allow its job to fail without failing the overall workflow (e.g. `windows-latest!`).    |
 | `timeout-minutes`                   | int  | `30`                     | Maximum runtime (in minutes) for each job before GitHub cancels it.
 |**Dependabot:**
+| `dependabot-auto-merge`             | bool | `true`                   | Merge eligible Dependabot PRs after the build. Set to `false` when the caller owns merging.
 | `dependabot-merge-method`           | str  | `squash`                 | Merge method for eligible Dependabot PRs. Supported values are `squash` and `rebase`.
 | `dependabot-merge-major-updates`    | bool | `false`                  | Whether major Dependabot updates are eligible for merging. Minor and patch updates remain eligible by default.
 | `dependabot-github-app-client-id`   | str  | -                        | Optional GitHub App client ID. It must be supplied together with `DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY`.
@@ -331,13 +348,18 @@ jobs:
 | `extra-maven-args`                  | str  | -                        | Additional command-line flags to append to every Maven invocation (e.g. `-DskipTests`).
 | `maven-settings-file`               | str  | -                        | Path to a custom Maven `settings.xml`. If unset, the workflow uses [resources/maven/settings.xml](resources/maven/settings.xml)).
 | **Deployment:**
+| `maven-deploy`                      | bool | `true`                   | Publish Maven artifacts and Javadoc. With `false`, ordinary builds use `verify` and Maven releases still create commits and tags without publishing artifacts.
 | `development-branch`                | str  | `main`                   | Long-lived development branch that serves as the source for cutting Maven releases and publishing SNAPSHOT version (e.g., 'main' or 'develop').
+| `release-on-workflow-dispatch`      | bool | `false`                  | Allow releases and deployments on manual runs of `development-branch` in addition to pushes.
 | `release-trigger-file`              | str  | `.ci/release-trigger.sh` | Path to a shell script that defines variables evaluated by the workflow to decide whether to perform an automatic Maven release. Defines `POM_CURRENT_VERSION`, `POM_RELEASE_VERSION`, `DRY_RUN`, and `SKIP_TESTS`. When on `development-branch` and versions match, a release is cut automatically.
 | `javadoc-branch`                    | str  | -                        | Branch where generated Javadoc HTML is published (e.g. `gh-pages`). Omit or leave blank to skip Javadoc deployment.
 | `snapshots-branch`                  | str  | -                        | Branch to which SNAPSHOT artifacts are deployed (e.g. `mvn-snapshots`). Omit or leave blank to skip snapshot publishing.
 | **Hooks:**
 | `before-build`                      | str  | -                        | Bash commands to run **before** the Maven build starts.
 | `after-build`                       | str  | -                        | Bash commands to run **after** the Maven build completes.
+| **Build artifacts:**
+| `build-artifact-name`               | str  | `build-artifacts`        | Name used by downstream artifact downloads. The `coverage-` prefix is reserved.
+| `build-artifact-paths`              | str  | -                        | Files or newline-separated path patterns to upload after `after-build`. Empty disables upload. Only the compile-JDK build on the first runner and Maven version uploads.
 |**Debugging:**
 | `debug-logging`                     | bool | `false`                  | Print diagnostic context, matrix, outputs, and environment details to job logs.
 | `debug-with-ssh`                    | str  | `never`                  | When to open an SSH session for post-build debugging: `always`, `on_failure`, `on_failure_or_cancelled`, or `never`.
@@ -348,6 +370,7 @@ jobs:
 
 | Name                     | Description
 | ------------------------ | -----------
+| `RELEASE_TOKEN`          | Optional token for release commits, tags, and deployment branches. Defaults to `GITHUB_TOKEN`; only the eligible release job receives it.
 | `SONATYPE_CENTRAL_USER`  | Sonatype Central username (required for publishing releases to Maven Central).
 | `SONATYPE_CENTRAL_TOKEN` | Sonatype Central API token (required for publishing releases to Maven Central).
 | `GPG_SIGN_KEY`           | Base64-encoded GPG private key for signing release artifacts.

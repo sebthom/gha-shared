@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 
+# Builds Maven projects and creates version/tag releases, with artifact publication controlled separately.
+
 #####################
 # Script init
 #####################
@@ -57,6 +59,8 @@ echo
 # shellcheck disable=SC1091  # (info): Not following: ./configure-maven.sh: openBinaryFile: does not exist (No such file or directory)
 source "$THIS_FILE_DIR/configure-maven.sh"
 
+MAVEN_DEPLOY=${MAVEN_DEPLOY:-true}
+
 
 #
 # decide whether to perform a release build or build+deploy a snapshot version
@@ -84,14 +88,24 @@ if [[ ${maven_project_version:-foo} == "${POM_CURRENT_VERSION:-bar}" && ${CAN_CR
     cp -f "${MAVEN_TOOLCHAINS_FILE:-}" "$HOME/.m2/toolchains.xml"
   fi
 
-  export DEPLOY_RELEASES_TO_MAVEN_CENTRAL=true
+  # The parent enables Central through this environment variable, independently of Maven's deploy skip.
+  export DEPLOY_RELEASES_TO_MAVEN_CENTRAL=$MAVEN_DEPLOY
+  release_plugin_args=(-Dresume=false)
+  release_maven_args="-DskipTests=${SKIP_TESTS} -DskipITs=${SKIP_TESTS}"
+  if [[ $MAVEN_DEPLOY != true ]]; then
+    # Perform defaults to deploy and may append site-deploy. Install retains the local release artifacts
+    # without either publication path; publishing builds keep the caller's configured perform goals.
+    release_plugin_args+=(-Dgoals=install)
+    # Prepare also forks Maven with its own goals, so the deployment skip must still reach those invocations.
+    release_maven_args+=" -Dmaven.deploy.skip=true"
+  fi
 
   ${maven:-mvn} "$@" \
       "-DskipTests=${SKIP_TESTS}" \
       "-DskipITs=${SKIP_TESTS}" \
       "-DdryRun=${DRY_RUN}" \
-      -Dresume=false \
-      "-Darguments=-DskipTests=${SKIP_TESTS} -DskipITs=${SKIP_TESTS}" \
+      "${release_plugin_args[@]}" \
+      "-Darguments=$release_maven_args" \
       "-DreleaseVersion=${POM_RELEASE_VERSION}" \
       "-DdevelopmentVersion=${nextDevelopmentVersion}" \
       help:active-profiles clean release:clean release:prepare release:perform \
@@ -104,7 +118,7 @@ fi
 #
 # build/deploy snapshot version
 #
-if [[ ${CAN_CREATE_RELEASE:-} == "true" ]]; then
+if [[ ${CAN_CREATE_RELEASE:-} == "true" && $MAVEN_DEPLOY == true ]]; then
   maven_goal="deploy"
 
   if [[ ${GITHUB_ACTIONS:-} == "true" ]]; then
@@ -176,7 +190,7 @@ ${maven:-mvn} "$@" \
     | grep -v -e "\[INFO\] Download.* from repository-restored-from-cache" `# suppress download messages from repo restored from cache ` \
     | grep -v -e "\[INFO\]  .* \[0.0[0-9][0-9]s\]" # the grep command suppresses all lines from maven-buildtime-extension that report plugins with execution time <=99ms
 
-if [[ ${CAN_CREATE_RELEASE:-} == "true" && ${GITHUB_ACTIONS:-} == "true" ]]; then
+if [[ ${CAN_CREATE_RELEASE:-} == "true" && $MAVEN_DEPLOY == true && ${GITHUB_ACTIONS:-} == "true" ]]; then
   if [[ -n ${SNAPSHOTS_BRANCH:-} ]]; then
     echo
     echo "###################################################"

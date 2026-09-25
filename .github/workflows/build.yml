@@ -85,6 +85,9 @@ jobs:
     - name: Test Dependabot auto-merge routing
       run: bash tests/dependabot-auto-merge.sh
 
+    - name: Test Maven build policy
+      run: bash tests/maven-build.sh
+
 
   dependabot-pr-auto-merge:
     # Merge only after workflow, action, and shell validation plus routing tests succeed for this Dependabot PR.

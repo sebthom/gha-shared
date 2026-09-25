@@ -24,6 +24,10 @@ on:
         description: "Maximum number of minutes the workflow is allowed to run before timing out"
         default: 30
         type: number
+      dependabot-auto-merge:
+        description: "Whether to merge eligible Dependabot PRs after this workflow's build succeeds"
+        default: true
+        type: boolean
       dependabot-merge-method:
         description: "Merge method for eligible Dependabot PRs; supported values are 'squash' and 'rebase'"
         default: squash
@@ -87,10 +91,18 @@ on:
         #default: true
         #type: boolean
 
+      maven-deploy:
+        description: "Whether to publish Maven artifacts and Javadoc; false still allows release version commits and tags"
+        default: true
+        type: boolean
       development-branch:
         description: "Long-lived development branch that serves as the source for cutting Maven releases and publishing SNAPSHOT version (e.g., 'main' or 'develop')"
         default: main
         type: string
+      release-on-workflow-dispatch:
+        description: "Allow releases and deployments on manually dispatched runs of the development branch"
+        default: false
+        type: boolean
       release-trigger-file:
         description: >
           Path to a shell script that defines variables evaluated by the workflow to decide whether to perform an automatic Maven release. 
@@ -119,6 +131,14 @@ on:
       after-build:
         description: "Bash commands executed after the Maven build" 
         required: false
+        type: string
+      build-artifact-name:
+        description: "Name of the optional build artifact; the coverage- prefix is reserved for coverage reports"
+        default: build-artifacts
+        type: string
+      build-artifact-paths:
+        description: "Files to upload after after-build, using the compile JDK on the first runner and Maven version; empty disables upload"
+        default: ""
         type: string
 
       debug-logging:
@@ -157,6 +177,10 @@ on:
       gha-shared-version: { default: "v1",                 type: string, description: "Version of this workflow: branch, tag or commit" }
 
     secrets:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callsecrets
+      RELEASE_TOKEN:
+        description: "Optional token for release commits, tags, and deployment branches; defaults to GITHUB_TOKEN"
+        required: false
+
       DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY:
         description: "Optional GitHub App private key for Dependabot workflow-file merges"
         required: false
@@ -253,9 +277,12 @@ jobs:
         TEST_JDKS:        ${{ inputs.test-jdks }}
         MAVEN_JDK:        ${{ inputs.maven-jdk }}
         MAVEN_VERSIONS:   ${{ inputs.maven-versions }}
-        ON_DEV_BRANCH:    ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.development-branch) && 'true' || 'false' }}
+        # Manual releases remain opt-in and must use the development branch, just like push releases.
+        ON_DEV_BRANCH:    ${{ github.ref == format('refs/heads/{0}', inputs.development-branch) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release-on-workflow-dispatch)) && 'true' || 'false' }}
         DISABLE_RELEASES: ${{ (env.ACT && !env.GITEA_ACTIONS) && 'true' || 'false' }}  # no releases when running via nektos/act locally
         CODECOV_TOKEN:    ${{ secrets.CODECOV_TOKEN }}
+        BUILD_ARTIFACT_NAME:  ${{ inputs.build-artifact-name }}
+        BUILD_ARTIFACT_PATHS: ${{ inputs.build-artifact-paths }}
       shell: python {0}
       run: |
         import collections, json, os, re, uuid
@@ -306,6 +333,11 @@ jobs:
         on_dev_branch = ENV["ON_DEV_BRANCH"] == "true"
         codecov_token = ENV["CODECOV_TOKEN"]
 
+        # Coverage cleanup owns this namespace; accepting it here would delete a caller's build artifact.
+        # upload-artifact trims its inputs, including BOMs that Python's str.strip() would leave intact.
+        if ENV["BUILD_ARTIFACT_PATHS"] and re.match(r"^[\s\ufeff]*coverage-", ENV["BUILD_ARTIFACT_NAME"]):
+            raise ValueError("The 'coverage-' artifact name prefix is reserved for coverage reports.")
+
         matrix = []
 
         # compile JDK
@@ -336,6 +368,8 @@ jobs:
                   "CONCURRENCY_GROUP":      concurrency_group,
                   "ALLOW_FAILURE":          runner_allow_failure or mvn_allow_failure,
                   "UPLOAD_TO_CODECOV":      runner_idx == 0 and mvn_idx == 0 and codecov_token != "",
+                  # A fixed artifact name must have one owner across all runners, Maven versions, and test JDKs.
+                  "UPLOAD_BUILD_ARTIFACT":  runner_idx == 0 and mvn_idx == 0,
                 }
                 if entry not in matrix:
                     matrix.append(entry)
@@ -357,7 +391,8 @@ jobs:
                       "CAN_UPDATE_MAVEN_CACHE": False,
                       "CONCURRENCY_GROUP":      uuid.uuid4().hex,
                       "ALLOW_FAILURE":          jdk_allow_failure or mvn_allow_failure,
-                      "UPLOAD_TO_CODECOV":      runner_idx == 0 and mvn_idx == 0 and codecov_token != ""
+                      "UPLOAD_TO_CODECOV":      runner_idx == 0 and mvn_idx == 0 and codecov_token != "",
+                      "UPLOAD_BUILD_ARTIFACT":  False,
                     }
                     if entry not in matrix:
                         matrix.append(entry)
@@ -454,6 +489,10 @@ jobs:
     - name: Git Checkout
       # https://github.com/actions/checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # Checkout's persisted authorization header overrides Maven's URL credentials.
+        # Restrict the custom token to the same release-eligible job as the Maven step.
+        token: ${{ matrix.CAN_CREATE_RELEASE && !env.ACT && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
 
     - name: Download workflow resources
@@ -657,9 +696,11 @@ jobs:
         # release toggles & credentials - will be unset for PR runs
         CAN_CREATE_RELEASE:   ${{ matrix.CAN_CREATE_RELEASE && !env.ACT }}
         RELEASE_TRIGGER_FILE: ${{ inputs.release-trigger-file }}
+        MAVEN_DEPLOY:         ${{ inputs.maven-deploy }}
 
         GITHUB_USER:    ${{ github.actor }}
-        GITHUB_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+        # Only the eligible release job receives a custom, potentially long-lived release credential.
+        GITHUB_API_KEY: ${{ matrix.CAN_CREATE_RELEASE && !env.ACT && (secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN) || '' }}
 
         # https://maven.apache.org/plugins/maven-jarsigner-plugin/
         JARSIGNER_KEYSTORE_PATH:  ${{ steps.GET_JARSIGNER_CERT.outputs.KEYSTORE_PATH }}
@@ -723,6 +764,16 @@ jobs:
         GITHUB_JOB_ID: ${{ github.job }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: ${{ inputs.after-build }}
+
+
+    - name: Upload build artifacts
+      # Upload after the caller's hook so it can rename files and verify the final distribution first.
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: inputs.build-artifact-paths && matrix.UPLOAD_BUILD_ARTIFACT
+      with:
+        name: ${{ inputs.build-artifact-name }}
+        path: ${{ inputs.build-artifact-paths }}
+        if-no-files-found: error
 
 
     ##################################################
@@ -820,7 +871,9 @@ jobs:
     # The called workflow repeats these checks because standalone callers need the same boundary.
     # Check both the actor and PR author so this write-capable job only runs for Dependabot updates.
     # Manual reruns keep the original actor and remain allowed.
+    # Callers with downstream validation can retain their own deferred merge job.
     if: >-
+      inputs.dependabot-auto-merge &&
       needs.build.result == 'success' &&
       github.event_name == 'pull_request' &&
       github.actor == 'dependabot[bot]' &&
@@ -902,8 +955,9 @@ jobs:
 
 
     - name: "Delete intermediate build artifacts"
+      # Caller jobs run after this reusable workflow and still need its non-coverage artifacts.
       # https://github.com/GeekyEggo/delete-artifact
       uses: geekyeggo/delete-artifact@176a747ab7e287e3ff4787bf8a148716375ca118 # v6.0.0
       with:
-        name: "*"
+        name: "coverage-*"
         failOnError: false
