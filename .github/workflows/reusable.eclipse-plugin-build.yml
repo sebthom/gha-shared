@@ -63,6 +63,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
         description: "Long-lived branch that holds the update site of the latest publishing stable releases (e.g., 'updatesite')"
         default: updatesite
         type: string
+      release-github-app-client-id:
+        description: "Optional GitHub App client ID used with RELEASE_GITHUB_APP_PRIVATE_KEY for release publication"
+        default: ""
+        type: string
 
       release-archive-name:
         description: >
@@ -157,6 +161,10 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
       gha-shared-version: { default: "v1",                 type: string, description: "Version of this workflow: branch, tag or commit" }
 
     secrets:  # https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onworkflow_callsecrets
+      RELEASE_GITHUB_APP_PRIVATE_KEY:
+        description: "Optional GitHub App private key for release publication; requires release-github-app-client-id"
+        required: false
+
       DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY:
         description: "Optional GitHub App private key for Dependabot workflow-file merges"
         required: false
@@ -815,6 +823,37 @@ jobs:
             out.write(f"archive={matches[0]}\n")
 
 
+    - name: Validate release GitHub App configuration
+      id: RELEASE_APP_AUTH
+      if: ${{ matrix.RELEASE_NAME }}
+      env:
+        GITHUB_APP_CLIENT_ID: ${{ inputs.release-github-app-client-id }}
+        GITHUB_APP_PRIVATE_KEY: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
+      run: |
+        # Credentials are one optional unit; partial configuration must not silently use the built-in token.
+        if [[ -z "$GITHUB_APP_CLIENT_ID" && -z "$GITHUB_APP_PRIVATE_KEY" ]]; then
+          printf 'enabled=false\n' >>"$GITHUB_OUTPUT"
+        elif [[ -n "$GITHUB_APP_CLIENT_ID" && -n "$GITHUB_APP_PRIVATE_KEY" ]]; then
+          printf 'enabled=true\n' >>"$GITHUB_OUTPUT"
+        else
+          echo "Release GitHub App client ID and private key must be configured together." >&2
+          exit 1
+        fi
+
+
+    - name: Create release GitHub App token
+      id: RELEASE_APP_TOKEN
+      if: steps.RELEASE_APP_AUTH.outputs.enabled == 'true'
+      # Mint after the build so its one-hour lifetime covers publication, even for long builds.
+      # The default repository scope and these permissions cover historical workflow files in archive tags.
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.release-github-app-client-id }}
+        private-key: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
+        permission-contents: write
+        permission-workflows: write
+
+
     - name: "Build release notes from commits"
       id: BUILD_RELEASE_NOTES
       if: ${{ matrix.RELEASE_NAME }}
@@ -832,13 +871,13 @@ jobs:
       with:
         release-name:        ${{ matrix.RELEASE_NAME }}
         stable-release-name: stable
-        github-token:        ${{ secrets.GITHUB_TOKEN }}
+        github-token:        ${{ steps.RELEASE_APP_TOKEN.outputs.token || secrets.GITHUB_TOKEN }}
 
 
     - name: "Create '${{ matrix.RELEASE_NAME }}' release"
       if: ${{ matrix.RELEASE_NAME }}
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ steps.RELEASE_APP_TOKEN.outputs.token || secrets.GITHUB_TOKEN }}
         RELEASE_NAME: ${{ matrix.RELEASE_NAME }}
         RELEASE_ARCHIVE: ${{ steps.FIND_RELEASE_ARCHIVE.outputs.archive }}
         RELEASE_ARCHIVE_NAME: ${{ inputs.release-archive-name }}
@@ -857,7 +896,7 @@ jobs:
       if: ${{ matrix.RELEASE_NAME }}
       env:
         GITHUB_USER:  ${{ github.actor }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ steps.RELEASE_APP_TOKEN.outputs.token || secrets.GITHUB_TOKEN }}
         GITHUB_REPO:  ${{ github.repository }}
         BRANCH_NAME:  ${{ matrix.UPDATESITE_BRANCH }}
         RELEASE_ARCHIVE: ${{ steps.FIND_RELEASE_ARCHIVE.outputs.archive }}

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-ArtifactOfProjectHomePage: https://github.com/sebthom/gha-shared
 #
-# Validates workflows, action metadata, shell scripts, and embedded merge routing before merging Dependabot updates.
+# Validates workflows, action metadata, shell scripts, release authentication, and Dependabot merge routing.
 #
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 
@@ -87,6 +87,9 @@ jobs:
 
     - name: Test Maven build policy
       run: bash tests/maven-build.sh
+
+    - name: Test Eclipse release authentication
+      run: bash tests/eclipse-release-auth.sh
 
 
   dependabot-pr-auto-merge:

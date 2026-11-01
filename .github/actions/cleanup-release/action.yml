@@ -1,3 +1,4 @@
+# Archives or deletes previous releases using one GitHub token for API and HTTP Git operations.
 # https://docs.github.com/en/actions/creating-actions/creating-a-composite-action
 name: Cleanup previous GitHub release
 description: >
@@ -15,7 +16,7 @@ inputs:
     required: false
     default: stable
   github-token:
-    description: "GitHub token used for GitHub CLI/API calls"
+    description: "GitHub token used for GitHub CLI/API calls and HTTP Git fetch/push"
     required: false
     default: ${{ github.token }}
 
@@ -30,6 +31,17 @@ runs:
       GITHUB_TOKEN:        ${{ inputs.github-token }}
     run: |
       set -euo pipefail
+
+      git_remote() {
+        # Use the same token as the API calls, even when checkout saved a different token earlier.
+        # Command-scoped configuration keeps the token out of Git config files and later steps.
+        local authorization
+        authorization=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\r\n')
+        echo "::add-mask::$authorization"
+        GIT_AUTH_HEADER="AUTHORIZATION: basic $authorization" git \
+          -c "http.${GITHUB_SERVER_URL}/.extraheader=" \
+          --config-env="http.${GITHUB_SERVER_URL}/.extraheader=GIT_AUTH_HEADER" "$@"
+      }
 
       echo "::group::Cleanup previous release: $RELEASE_NAME"
 
@@ -49,7 +61,7 @@ runs:
       echo "Handling previous stable release '$STABLE_RELEASE_NAME'..."
 
       # Ensure we know about remote tags
-      git fetch --tags origin || true
+      git_remote fetch --tags origin || true
 
       # If there is no stable tag, there is nothing to archive
       if ! git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
@@ -68,7 +80,7 @@ runs:
           GH_DEBUG=1 gh release delete "$STABLE_RELEASE_NAME" --yes --cleanup-tag || true
         else
           git tag -d "$STABLE_RELEASE_NAME" || true
-          git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+          git_remote push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
         fi
         echo "::endgroup::"
         exit 0
@@ -83,7 +95,7 @@ runs:
         if git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
           git tag -d "$STABLE_RELEASE_NAME" || true
         fi
-        git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+        git_remote push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
         echo "::endgroup::"
         exit 0
       fi
@@ -100,7 +112,7 @@ runs:
 
       # Ensure the archive tag exists on the old commit before updating the release
       git tag -f "$new_tag" "$commit_sha"
-      git push origin "refs/tags/$new_tag" --force
+      git_remote push origin "refs/tags/$new_tag" --force
 
       GH_DEBUG=1 gh release edit "$STABLE_RELEASE_NAME" --tag "$new_tag" --title "$new_tag"
 
@@ -109,7 +121,7 @@ runs:
       if git rev-parse --verify --quiet "refs/tags/$STABLE_RELEASE_NAME" >/dev/null; then
         git tag -d "$STABLE_RELEASE_NAME" || true
       fi
-      git push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
+      git_remote push origin ":refs/tags/$STABLE_RELEASE_NAME" || true
 
       echo "::endgroup::"
 

@@ -392,6 +392,30 @@ The built-in token is used by default.
 Configure the optional GitHub App credentials described above when concurrent Dependabot workflow-file updates
 must merge without manual recovery.
 
+#### <a name="eclipse-release-authentication"></a>Release authentication
+
+Release publication uses one token for GitHub API calls and Git operations.
+The built-in `GITHUB_TOKEN` is used by default.
+To archive releases that contain historical workflow files, optionally configure a GitHub App with:
+
+- Input `release-github-app-client-id`: the GitHub App's Client ID, normally stored in a repository variable.
+  Its default is empty.
+- Secret `RELEASE_GITHUB_APP_PRIVATE_KEY`: the app's private key, stored as an Actions secret.
+
+Install the app on the repository with **Contents: read and write** and **Workflows: read and write**.
+Approve any pending permission changes on that installation.
+The workflow requests only those permissions and scopes the token to the current repository.
+Configuring only one credential fails the release job instead of silently falling back to the built-in token.
+
+The release job generates the App token from these credentials after building, immediately before publication.
+Cleanup, release creation, and update-site deployment use that generated token.
+Checkout, cache operations, and jobs without a release keep using the built-in token.
+The app token expires after one hour and is revoked when the job ends, so publication must finish within that hour.
+
+App-authenticated writes can trigger other workflows that match tag, release, or deployment-branch events.
+Check the caller's event filters when enabling this option.
+Publish the shared workflow changes before adding the new input and secret to callers.
+
 #### Example
 
 ```yaml
@@ -432,6 +456,8 @@ jobs:
       release-branch: release
       release-updatesite-branch: updatesite
       release-archive-name: org.haxe4e.plugin.updatesite.zip
+      # Optional authentication for publishing historical workflow files in release tags:
+      # release-github-app-client-id: ${{ vars.RELEASE_GITHUB_APP_CLIENT_ID }}
 
       debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
@@ -443,6 +469,7 @@ jobs:
 
     # Omit this block when using the built-in github.token.
     # secrets:
+    #   RELEASE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
     #   DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
 
     permissions:
@@ -478,6 +505,10 @@ Use the standalone workflow for any additional ecosystems.
 The built-in token is used by default.
 Configure the optional GitHub App credentials described above when concurrent Dependabot workflow-file updates
 must merge without manual recovery.
+
+Release publication supports the same optional `release-github-app-client-id` input
+and `RELEASE_GITHUB_APP_PRIVATE_KEY` Actions secret as the plugin workflow.
+See [Release authentication](#eclipse-release-authentication) for permissions, defaults, and token lifetime.
 
 #### Example
 
@@ -516,6 +547,8 @@ jobs:
       development-updatesite-branch: updatesite-preview
       release-branch: release
       release-updatesite-branch: updatesite
+      # Optional authentication for publishing historical workflow files in release tags:
+      # release-github-app-client-id: ${{ vars.RELEASE_GITHUB_APP_CLIENT_ID }}
 
       debug-logging: false
       debug-with-ssh: ${{ inputs.debug-with-ssh }}
@@ -527,6 +560,7 @@ jobs:
 
     # Omit this block when using the built-in github.token.
     # secrets:
+    #   RELEASE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
     #   DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DEPENDABOT_MERGE_GITHUB_APP_PRIVATE_KEY }}
 
     permissions:
@@ -665,7 +699,10 @@ jobs:
 | -------------------- | ------ | --------------------- | -----------
 | `release-name`       | string | -                     | **Required.** Name of the release/tag being created (e.g. `preview`, `stable`).
 | `stable-release-name`| string | `stable`              | Name of the release/tag treated as "stable" for archiving behavior.
-| `github-token`       | string | `${{ github.token }}` | Token used for GitHub CLI/API calls.
+| `github-token`       | string | `${{ github.token }}` | Token used for GitHub CLI/API calls and HTTP Git fetch/push.
+
+Pass a custom token once through `github-token`; the action uses it for both API calls and HTTP Git operations.
+Git authentication is scoped to the action's remote commands and does not change checkout's saved credentials.
 
 *For full details, see the [.github/actions/cleanup-release/action.yml](.github/actions/cleanup-release/action.yml)*
 
