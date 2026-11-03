@@ -846,7 +846,7 @@ jobs:
       if: steps.RELEASE_APP_AUTH.outputs.enabled == 'true'
       # Mint after the build so its one-hour lifetime covers publication, even for long builds.
       # The default repository scope and these permissions cover historical workflow files in archive tags.
-      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
       with:
         client-id: ${{ inputs.release-github-app-client-id }}
         private-key: ${{ secrets.RELEASE_GITHUB_APP_PRIVATE_KEY }}
